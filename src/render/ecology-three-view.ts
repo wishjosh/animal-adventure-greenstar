@@ -109,20 +109,33 @@ export class EcologyThreeView {
         travelLift +
         Math.sin(elapsed * 4.1) * 0.045
 
-      // 빈 흙을 살필 때는 `내려가려다 못 내려가고 다시 올라오는` 동작을 반복한다.
-      // 앉기와 구별되는 것은 높이가 아니라 이 되돌아 오르는 몸짓이다.
-      // 한 번도 앉은 높이(0.72)까지 내려가지 않고 한자리에 멈추지도 않는다.
+      // 빈 흙을 살필 때는 `내려가려다 바깥으로 밀려나는` 동작을 반복한다.
+      // 앉기와 구별되는 것은 높이가 아니라 낮아질수록 중심에서 벗어나는 것이다.
+      // 낮고 가운데에 오면 사람 눈에는 앉은 것으로 읽히므로 둘을 반대로 묶는다.
+      // 최저점 1.02는 앉은 높이(0.72)와 0.30 떨어져 있다.
       if (butterfly.phase === 'searching' && butterfly.motionProgress >= 1) {
         const attempt = Math.abs(Math.sin(butterfly.phaseSeconds * 2.2))
-        const swing = 0.2 + (1 - attempt) * 0.5
+        const swing = 0.2 + attempt * 0.52
         const heading = butterfly.phaseSeconds * 1.15
         this.butterfly.position.x = butterfly.position.x + Math.cos(heading) * swing
         this.butterfly.position.z = butterfly.position.z + Math.sin(heading) * swing
         this.butterfly.position.y =
           terrainHeight(butterfly.position.x, butterfly.position.z) +
           1.28 -
-          attempt * 0.4 +
+          attempt * 0.26 +
           Math.sin(elapsed * 5.6) * 0.05
+      }
+
+      // 피난처에서는 나뭇잎 사이를 느리게 맴돈다. 한 점에 굳어 있으면
+      // 쉬는 것으로 보이므로 살피기보다 느리고 넓게 돈다.
+      if (butterfly.phase === 'refuge' && butterfly.motionProgress >= 1) {
+        const drift = butterfly.phaseSeconds * 0.62
+        this.butterfly.position.x = butterfly.position.x + Math.cos(drift) * 0.34
+        this.butterfly.position.z = butterfly.position.z + Math.sin(drift) * 0.34
+        this.butterfly.position.y =
+          terrainHeight(butterfly.position.x, butterfly.position.z) +
+          0.94 +
+          Math.sin(elapsed * 3.4) * 0.06
       }
     }
 
@@ -206,8 +219,9 @@ export class EcologyThreeView {
   }
 
   private syncButterfly(runtime: ResidentRuntime, allowContactCue: boolean): void {
-    const visible = runtime.phase !== 'refuge' || runtime.motionProgress < 1
-    this.butterfly.visible = visible
+    // 나비는 피난처에 있어도 화면에서 지우지 않는다. 사라졌다 나타나면
+    // 살피기까지 `왔다가 없어졌다`로 읽혀 하나의 이야기로 이어지지 않는다.
+    this.butterfly.visible = true
     this.butterfly.position.set(
       runtime.position.x,
       terrainHeight(runtime.position.x, runtime.position.z) +
