@@ -227,7 +227,8 @@ export function createFireBelliedToadState(): FireBelliedToadState {
   }
 }
 
-function pointAt(route: ToadRoute, progress: number): Point2 {
+// 화면 쪽에서 도약 리듬으로 진행을 다시 나눌 때도 같은 경로 위를 걷도록 내보낸다.
+export function toadRoutePointAt(route: ToadRoute, progress: number): Point2 {
   const clamped = Math.max(0, Math.min(1, progress))
   const wanted = route.length * clamped
   let passed = 0
@@ -329,7 +330,7 @@ export function advanceFireBelliedToad(
     return {
       state: {
         ...state,
-        position: pointAt(state.activeRoute, progress),
+        position: toadRoutePointAt(state.activeRoute, progress),
         routeProgress: progress,
       },
       cues: [],
@@ -395,7 +396,7 @@ export function advanceFireBelliedToad(
         state: {
           ...state,
           phase: 'approaching',
-          position: pointAt(route, 0),
+          position: toadRoutePointAt(route, 0),
           routeProgress: 0,
           phaseSeconds: 0,
           tracePulseCount,
@@ -438,7 +439,7 @@ export function advanceFireBelliedToad(
     return {
       state: {
         ...state,
-        position: pointAt(route, progress),
+        position: toadRoutePointAt(route, progress),
         routeProgress: progress,
         phaseSeconds: state.phaseSeconds + delta,
       },

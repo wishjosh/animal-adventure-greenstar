@@ -1,8 +1,9 @@
 import * as THREE from 'three'
 import { terrainHeight, type Point2 } from '../content/first-map.ts'
-import type {
-  FireBelliedToadState,
-  ToadCue,
+import {
+  toadRoutePointAt,
+  type FireBelliedToadState,
+  type ToadCue,
 } from '../domain/fire-bellied-toad.ts'
 import { B_C_PROTECTED_COVER_PATH } from '../domain/local-environment.ts'
 import {
@@ -22,6 +23,10 @@ type FadingMark = {
 
 const MAX_SNAIL_TRAIL_MARKS = 20
 const MAX_TOAD_MARKS = 8
+
+// 한 번의 도약에서 땅에 있는 몫이다. 이만큼은 앞으로 나아가지 않고 웅크린다.
+// 이 멈춤이 없으면 위아래로 흔들리며 미끄러지는 것으로 보인다.
+const TOAD_CROUCH_SHARE = 0.34
 
 export class EcologyThreeView {
   private readonly scene: THREE.Scene
@@ -148,15 +153,37 @@ export class EcologyThreeView {
       const travelling =
         toad.phase === 'approaching' ||
         (toad.phase === 'away' && Boolean(toad.activeRoute))
-      const hopCount = toad.activeRoute?.hopCount ?? 1
-      const cycle = (toad.routeProgress * hopCount) % 1
-      const hopLift = travelling
-        ? Math.pow(Math.sin(cycle * Math.PI), 2.2) * 0.28
-        : 0
+      const route = toad.activeRoute
+      let hopLift = 0
+      let crouch = 0
+      if (travelling && route) {
+        // 개구리는 등속으로 미끄러지지 않는다. 웅크렸다가 튀어 나가고
+        // 내려앉아 잠시 멈춘다. 도메인의 등속 진행을 화면에서만 이 리듬으로
+        // 다시 나눈다. 이동 속도와 도착 시각 계약은 그대로 둔다.
+        const stride = toad.routeProgress * route.hopCount
+        const landed = Math.floor(stride)
+        const withinHop = stride - landed
+        const airborne =
+          withinHop <= TOAD_CROUCH_SHARE
+            ? 0
+            : (withinHop - TOAD_CROUCH_SHARE) / (1 - TOAD_CROUCH_SHARE)
+        const spot = toadRoutePointAt(route, (landed + airborne) / route.hopCount)
+        this.toad.position.x = spot.x
+        this.toad.position.z = spot.z
+        hopLift = Math.sin(airborne * Math.PI) * 0.34
+        // 땅에 있는 동안 몸을 눌러 다음 도약을 준비한다.
+        crouch =
+          airborne > 0
+            ? 0
+            : Math.sin((withinHop / TOAD_CROUCH_SHARE) * Math.PI) * 0.22
+      }
       const breath = toad.phase === 'using' ? Math.sin(elapsed * 2.1) * 0.018 : 0
       this.toad.position.y =
-        terrainHeight(toad.position.x, toad.position.z) + 0.19 + hopLift + breath
-      this.toadBody.scale.y = 1 + breath * 0.85
+        terrainHeight(this.toad.position.x, this.toad.position.z) +
+        0.19 +
+        hopLift +
+        breath
+      this.toadBody.scale.y = 1 + breath * 0.85 - crouch
       const blink = toad.phase === 'using' && Math.sin(elapsed * 1.36) > 0.985
       this.toadEyes.scale.y = blink ? 0.18 : 1
     }
@@ -245,8 +272,9 @@ export class EcologyThreeView {
   }
 
   private syncSnail(runtime: ResidentRuntime, allowTrail: boolean): void {
-    const visible = runtime.phase !== 'refuge' || runtime.motionProgress < 1
-    this.snail.visible = visible
+    // 달팽이도 피난처에서 지우지 않는다. 덮임 아래에 그대로 있고 촉수만
+    // 거의 다 집어넣어, 사라진 것이 아니라 들어가 있는 것으로 보이게 한다.
+    this.snail.visible = true
     this.snail.position.set(
       runtime.position.x,
       terrainHeight(runtime.position.x, runtime.position.z) + 0.13,
@@ -254,7 +282,7 @@ export class EcologyThreeView {
     )
     this.turnToward(this.snail, this.lastSnailPosition, runtime.position)
 
-    if (allowTrail && visible && this.lastSnailPosition) {
+    if (allowTrail && this.lastSnailPosition) {
       this.trailDistance += Math.hypot(
         runtime.position.x - this.lastSnailPosition.x,
         runtime.position.z - this.lastSnailPosition.z,
