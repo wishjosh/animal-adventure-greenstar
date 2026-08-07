@@ -1,0 +1,24 @@
+{
+  "name": "animal-adventure-web-game",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Animal Adventure 가로 화면용 크로스플랫폼 웹 게임",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "check": "tsc --noEmit",
+    "test": "node --test test/*.test.mjs",
+    "build": "tsc --noEmit && vite build",
+    "build:pages": "tsc --noEmit && vite build --mode pages",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "@types/three": "0.185.1",
+    "typescript": "6.0.3",
+    "vite": "8.2.0"
+  },
+  "dependencies": {
+    "three": "0.185.1"
+  }
+}
+
