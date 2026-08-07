@@ -24,7 +24,9 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # 테스트가 .mjs에서 .ts 소스를 직접 불러오므로 타입 스트리핑이 기본으로
+          # 켜진 Node가 필요하다. Node 20에서는 ERR_UNKNOWN_FILE_EXTENSION이 난다.
+          node-version: 24
           cache: npm
 
       - name: Install dependencies
