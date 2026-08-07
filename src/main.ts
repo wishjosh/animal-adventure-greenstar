@@ -23,7 +23,9 @@ import { EcologyRuntime } from './runtime/ecology-runtime.ts'
 import { GameRuntime } from './runtime/game-runtime.ts'
 import { ResidentsRuntime, type ResidentsSnapshot } from './runtime/residents-runtime.ts'
 
-type EditTool = 'select' | 'low-flower' | 'low-cover' | 'surface-adjustment' | 'water'
+// 도구는 모두 정원에서 하는 일이다. `고르기`는 도구가 아니다.
+// 이미 심어 둔 것을 그냥 누르면 잡히므로 별도 도구가 필요 없다.
+type EditTool = 'low-flower' | 'low-cover' | 'surface-adjustment' | 'water'
 
 function requireElement<T extends Element>(selector: string): T {
   const element = document.querySelector<T>(selector)
@@ -42,7 +44,7 @@ app.innerHTML = [
   '    <div><strong id="place-name">산촌 집·작은 정원</strong><p id="place-cue">붉은 집 지붕이 돌아갈 자리를 알려 줍니다.</p></div>',
   '  </section>',
   '  <aside id="desktop-help" aria-label="컴퓨터 조작">',
-  '    <span><kbd>WASD</kbd> 걷기</span><span>↔ 끌어보기</span><span><kbd>Space</kbd> 꽃·잎 놓기</span>',
+  '    <span><kbd>WASD</kbd> 걷기</span><span>↔ 끌어보기</span><span><kbd>Space</kbd> 정원 가꾸기</span>',
   '  </aside>',
   '  <section id="touch-controls" aria-label="터치 조작">',
   '    <div id="move-pad" role="group" aria-label="이동 패드">',
@@ -51,17 +53,17 @@ app.innerHTML = [
   '    </div>',
   '    <p id="look-hint" aria-hidden="true"><span>↔</span> 화면을 끌어 둘러보기</p>',
   '  </section>',
-  '  <button id="edit-entry-button" type="button" hidden>✿ 꽃·잎 놓기</button>',
+  '  <button id="edit-entry-button" type="button" hidden>🌱 정원 가꾸기</button>',
   '  <button id="water-fill-button" type="button" hidden>💧 물 뜨기</button>',
-  '  <section id="edit-hud" aria-label="꽃과 잎을 놓아 보는 자리" hidden>',
-  '    <p id="edit-status" aria-live="polite">꽃이나 잎을 놓아 볼 수 있어요.</p>',
-  '    <nav id="edit-dock" aria-label="꽃과 잎 놓기"></nav>',
+  '  <section id="edit-hud" aria-label="정원을 가꾸는 자리" hidden>',
+  '    <p id="edit-status" aria-live="polite">아래에서 해 보고 싶은 것을 골라 주세요.</p>',
+  '    <nav id="edit-dock" aria-label="정원 가꾸기"></nav>',
   '  </section>',
   '  <section id="start-screen">',
   '    <div class="start-panel">',
   '      <p class="eyebrow">ANIMAL ADVENTURE</p>',
   '      <h1>산촌의 첫 물길</h1>',
-  '      <p>하고 싶은 것부터 해도 돼요. 가까운 흙에 꽃이나 풀잎을 놓아 보거나, 물가로 걸어가 작은 움직임을 찾아보세요.</p>',
+  '      <p>이 정원에 누가 사는지 볼래요?</p>',
   '      <div class="start-actions">',
   '        <button id="start-button" type="button">걸어 보기</button>',
   '        <button id="new-game-button" type="button" hidden>새로 걷기</button>',
@@ -143,7 +145,7 @@ try {
   let lookPointerId: number | undefined
   let lastLookX = 0
   let nearbyEditZone: EditZone | undefined
-  let editTool: EditTool = 'select'
+  let editTool: EditTool | undefined
   let selectedEntryId: string | undefined
   let movingEntry = false
   let lastSaveFingerprint = restored ? JSON.stringify(restored) : ''
@@ -310,36 +312,39 @@ try {
     }
     editHud.hidden = false
     if (movingEntry && entry) {
-      editDock.innerHTML = dockButton('cancel', '↩ 취소')
-      setEditStatus('옮길 흙자리를 골라 주세요.')
+      editDock.innerHTML = dockButton('cancel', '↩ 그만두기')
+      setEditStatus('옮겨 심을 자리를 눌러 주세요.')
       return
     }
     if (entry) {
       const occupied = guard.occupiedEntryIds?.includes(entry.id) ?? false
       editDock.innerHTML = entry.kind === 'surface-adjustment'
         ? [
-            dockButton('cancel', '↩ 취소'),
-            dockButton('restore', '◌ 원래 흙', false, occupied, 'danger-soft'),
-            dockButton('undo', '↶ 방금 전', false, !snapshot.canUndoActiveZone),
+            dockButton('cancel', '↩ 그만두기'),
+            dockButton('restore', '◌ 원래 흙으로', false, occupied, 'danger-soft'),
+            dockButton('undo', '↶ 되돌리기', false, !snapshot.canUndoActiveZone),
           ].join('')
         : [
-            dockButton('cancel', '↩ 취소'),
-            dockButton('move', '↔ 옮기기', false, occupied),
-            dockButton('retrieve', '▣ 담기', false, occupied, 'danger-soft'),
-            dockButton('undo', '↶ 방금 전', false, !snapshot.canUndoActiveZone),
+            dockButton('cancel', '↩ 그만두기'),
+            dockButton('move', '↔ 옮겨심기', false, occupied),
+            dockButton('retrieve', '🧺 캐서 담기', false, occupied, 'danger-soft'),
+            dockButton('undo', '↶ 되돌리기', false, !snapshot.canUndoActiveZone),
           ].join('')
-      setEditStatus(entry.kind === 'surface-adjustment' ? '다듬은 흙을 골랐습니다.' : '놓아 둔 식물을 골랐습니다.')
+      setEditStatus(
+        entry.kind === 'surface-adjustment'
+          ? '북돋운 흙을 잡았습니다.'
+          : '심어 둔 것을 잡았습니다.',
+      )
       return
     }
     const canEmpty = snapshot.wateringCanLevel <= 0
     editDock.innerHTML = [
-      dockButton('walk', '↩ 걷기'),
-      dockButton('select', '☝ 고르기', editTool === 'select'),
-      dockButton('low-flower', '✿ 꽃', editTool === 'low-flower'),
-      dockButton('low-cover', '⌁ 덮임', editTool === 'low-cover'),
-      dockButton('surface-adjustment', '≈ 흙', editTool === 'surface-adjustment'),
+      dockButton('walk', '↩ 걷기로'),
+      dockButton('low-flower', '🌱 심기', editTool === 'low-flower'),
       dockButton('water', waterLabel(snapshot.wateringCanLevel), editTool === 'water', canEmpty),
-      dockButton('undo', '↶ 방금 전', false, !snapshot.canUndoActiveZone),
+      dockButton('low-cover', '🍂 덮어 주기', editTool === 'low-cover'),
+      dockButton('surface-adjustment', '⌇ 흙 북돋우기', editTool === 'surface-adjustment'),
+      dockButton('undo', '↶ 되돌리기', false, !snapshot.canUndoActiveZone),
     ].join('')
     setEditStatus()
   }
@@ -362,9 +367,9 @@ try {
   }
 
   const describeRejection = (rejection: string | undefined): string => {
-    if (rejection === 'outside-edit-zone') return '관리된 흙 안쪽을 골라 주세요.'
-    if (rejection === 'overlap') return '조금 떨어진 자리를 골라 주세요.'
-    if (rejection === 'nothing-to-undo') return '되돌릴 방금 전 행동이 없습니다.'
+    if (rejection === 'outside-edit-zone') return '관리된 흙 안쪽을 눌러 주세요.'
+    if (rejection === 'overlap') return '조금 떨어진 자리를 눌러 주세요.'
+    if (rejection === 'nothing-to-undo') return '되돌릴 것이 없습니다.'
     if (rejection === 'occupied') return '지금 작은 생명이 쓰는 자리는 그대로 둡니다.'
     return '지금은 그 자리를 바꾸지 않습니다.'
   }
@@ -386,7 +391,7 @@ try {
     input.reset()
     resetMovePad()
     ecology.enter(zone.id)
-    editTool = 'select'
+    editTool = undefined
     selectedEntryId = undefined
     movingEntry = false
     shell.dataset.mode = 'edit'
@@ -397,7 +402,7 @@ try {
 
   const exitEdit = (): void => {
     ecology.exit()
-    editTool = 'select'
+    editTool = undefined
     selectedEntryId = undefined
     movingEntry = false
     editHud.hidden = true
@@ -432,7 +437,7 @@ try {
       selectedEntryId = undefined
       movingEntry = false
     }
-    commitEdit(result, '방금 전 모습을 되돌렸습니다.')
+    commitEdit(result, '방금 한 것을 되돌렸습니다.')
   }
 
   const handleCanvasEdit = (clientX: number, clientY: number): void => {
@@ -454,15 +459,21 @@ try {
       commitEdit(result, '새 자리로 옮겼습니다.')
       return
     }
-    if (editTool === 'select') {
-      selectedEntryId = view.pickEditEntry(clientX, clientY)
+    // 이미 심어 둔 것을 누르면 도구와 상관없이 그것을 잡는다.
+    // 겹쳐 놓기는 어차피 막혀 있으므로 잃는 조작이 없다.
+    const pickedEntry = view.pickEditEntry(clientX, clientY)
+    if (pickedEntry) {
+      selectedEntryId = pickedEntry
       renderEditDock()
-      if (!selectedEntryId) setEditStatus('놓아 둔 식물이나 다듬은 흙을 골라 보세요.')
       return
     }
     const at = view.pickGround(clientX, clientY)
     if (!at) {
-      setEditStatus('관리된 흙 안쪽을 골라 주세요.')
+      setEditStatus('관리된 흙 안쪽을 눌러 주세요.')
+      return
+    }
+    if (!editTool) {
+      setEditStatus('아래에서 해 보고 싶은 것을 골라 주세요.')
       return
     }
     if (editTool === 'water') {
@@ -486,10 +497,10 @@ try {
     commitEdit(
       result,
       editTool === 'low-flower'
-        ? '작은 꽃을 놓았습니다.'
+        ? '꽃을 심었습니다.'
         : editTool === 'low-cover'
-          ? '낮은 덮임을 놓았습니다.'
-          : '작은 흙 표면을 다듬었습니다.',
+          ? '풀잎으로 덮어 주었습니다.'
+          : '흙을 북돋웠습니다. 물을 더 오래 머금습니다.',
     )
   }
 
@@ -509,18 +520,24 @@ try {
       return
     }
     if (
-      action === 'select' ||
       action === 'low-flower' ||
       action === 'low-cover' ||
       action === 'surface-adjustment' ||
       action === 'water'
     ) {
-      editTool = action
+      // 같은 도구를 다시 누르면 내려놓는다.
+      editTool = editTool === action ? undefined : action
       selectedEntryId = undefined
       movingEntry = false
       renderEditDock()
-      if (action === 'water') {
-        setEditStatus('물을 줄 흙을 눌러 주세요.')
+      const hint = {
+        'low-flower': '심을 자리를 눌러 주세요.',
+        'low-cover': '덮어 줄 자리를 눌러 주세요.',
+        'surface-adjustment': '북돋울 흙을 눌러 주세요.',
+        water: '물을 줄 흙을 눌러 주세요.',
+      }
+      if (editTool) {
+        setEditStatus(hint[editTool])
       }
       return
     }
@@ -535,7 +552,7 @@ try {
       selectedEntryId = undefined
       commitEdit(
         ecology.apply({ type: 'retrieve', zoneId, id: entry.id }, residentGuard()),
-        '식물을 다시 담았습니다.',
+        '캐서 바구니에 담았습니다.',
       )
       return
     }
@@ -602,7 +619,9 @@ try {
     }
     startButton.textContent = '걸어 보기'
     newGameButton.hidden = true
-    startNote.textContent = '목표도 시간 제한도 없습니다.'
+    // `목표가 없다`는 안심시키려는 말이지만 아이에게는 `할 게 없다`로 읽힌다.
+    // 지시하지 않으면서 방향만 주는 한 줄로 둔다.
+    startNote.textContent = '천천히 둘러봐도 괜찮아요.'
   }
 
   const beginGame = (): void => {
@@ -775,7 +794,9 @@ try {
     nearbyEditZone = !isEditing() ? getNearbyEditZone(snapshot.playerAt, 1.8) : undefined
     editEntryButton.hidden =
       !snapshot.started || snapshot.blocked || !nearbyEditZone || isEditing()
-    if (nearbyEditZone) editEntryButton.textContent = '✋ ' + nearbyEditZone.shortName + ' 손보기'
+    if (nearbyEditZone) {
+      editEntryButton.textContent = '🌱 ' + nearbyEditZone.shortName + ' 가꾸기'
+    }
     const nearbySource = !isEditing() ? getNearbyWaterSource(snapshot.playerAt) : undefined
     const canFull = ecology.snapshot().wateringCanLevel >= 1
     waterFillButton.hidden =

@@ -25,6 +25,7 @@ const FAST_TUNING = {
     useDuration: 0.1,
     refugeDuration: 0.1,
     travelSpeed: 1000,
+    searchDuration: 0.1,
   },
   'land-snail': {
     alertDistance: 0.25,
@@ -32,6 +33,7 @@ const FAST_TUNING = {
     useDuration: 0.1,
     refugeDuration: 0.1,
     travelSpeed: 1000,
+    searchDuration: 0.1,
   },
 }
 
@@ -231,6 +233,29 @@ test('연속 위치·시간 변화와 단계 사건은 서로 다른 계약으�
       kind: 'day-butterfly',
       reason: 'player-near',
       targetId: BUTTERFLY_PROTECTED_FLOWER.id,
+    },
+  ])
+  state = update.state
+
+  update = step(state, opportunities, {}, BUTTERFLY_EVENT_TUNING)
+  assert.deepEqual(update.events, [{ type: 'reached-refuge', kind: 'day-butterfly' }])
+  state = update.state
+
+  // 빈 편집에서는 꽃이 없는 흙을 먼저 들러 살피고 그냥 돌아간다.
+  update = step(state, opportunities, {}, BUTTERFLY_EVENT_TUNING)
+  assert.equal(update.events[0]?.type, 'started-search')
+  state = update.state
+
+  update = step(state, opportunities, {}, BUTTERFLY_EVENT_TUNING)
+  assert.equal(update.events[0]?.type, 'reached-search')
+  state = update.state
+
+  update = step(state, opportunities, {}, BUTTERFLY_EVENT_TUNING)
+  assert.deepEqual(update.events, [
+    {
+      type: 'left-target',
+      kind: 'day-butterfly',
+      reason: 'search-complete',
     },
   ])
   state = update.state

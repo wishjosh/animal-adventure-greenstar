@@ -108,6 +108,22 @@ export class EcologyThreeView {
         (butterfly.phase === 'using' ? 0.72 : 0.9) +
         travelLift +
         Math.sin(elapsed * 4.1) * 0.045
+
+      // 빈 흙을 살필 때는 `내려가려다 못 내려가고 다시 올라오는` 동작을 반복한다.
+      // 앉기와 구별되는 것은 높이가 아니라 이 되돌아 오르는 몸짓이다.
+      // 한 번도 앉은 높이(0.72)까지 내려가지 않고 한자리에 멈추지도 않는다.
+      if (butterfly.phase === 'searching' && butterfly.motionProgress >= 1) {
+        const attempt = Math.abs(Math.sin(butterfly.phaseSeconds * 2.2))
+        const swing = 0.2 + (1 - attempt) * 0.5
+        const heading = butterfly.phaseSeconds * 1.15
+        this.butterfly.position.x = butterfly.position.x + Math.cos(heading) * swing
+        this.butterfly.position.z = butterfly.position.z + Math.sin(heading) * swing
+        this.butterfly.position.y =
+          terrainHeight(butterfly.position.x, butterfly.position.z) +
+          1.28 -
+          attempt * 0.4 +
+          Math.sin(elapsed * 5.6) * 0.05
+      }
     }
 
     const snail = this.smallState.snail
@@ -240,7 +256,10 @@ export class EcologyThreeView {
         ? Math.max(0.12, 1 - runtime.motionProgress * 0.88)
         : runtime.phase === 'returning'
           ? Math.min(1, 0.18 + runtime.motionProgress * 0.82)
-          : 1
+          : // 마른 흙을 살필 때는 촉수를 반쯤만 내민다. 자리를 쓰는 모습과 구별한다.
+            runtime.phase === 'searching'
+            ? 0.55
+            : 1
     this.snailTentacles.scale.y = tentacleScale
     this.lastSnailPosition = { ...runtime.position }
   }

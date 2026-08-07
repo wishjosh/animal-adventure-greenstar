@@ -165,7 +165,7 @@ kbd {
   box-shadow: 0 4px 0 rgba(35, 79, 61, 0.92), 0 9px 20px rgba(28, 58, 43, 0.18);
 }
 
-/* 물 뜨는 자리에 닿았을 때만 나타난다. 손보기 버튼과 겹치지 않게 그 위에 둔다. */
+/* 물 뜨는 자리에 닿았을 때만 나타난다. 가꾸기 버튼과 겹치지 않게 그 위에 둔다. */
 #water-fill-button {
   position: absolute;
   z-index: 6;

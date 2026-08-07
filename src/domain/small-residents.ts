@@ -3,10 +3,14 @@ import {
   B_C_PROTECTED_COVER_PATH,
   type LocalEnvironmentSnapshot,
 } from './local-environment.ts'
-import { type EditZoneId, type Point2 } from '../content/first-map.ts'
+import { EDIT_ZONES, type EditZoneId, type Point2 } from '../content/first-map.ts'
 
 export type SmallResidentKind = 'day-butterfly' | 'land-snail'
-export type ResidentPhase = 'using' | 'refuge' | 'returning'
+
+// `searching`은 아직 자기 자리가 없는 흙을 들러 잠시 살피고 그냥 떠나는 상태다.
+// 실패 표시나 슬픈 연출이 아니라 `여기에 무언가 있으면 좋겠다`를 말 없이 보여 준다.
+// 플레이어가 그 자리를 채우면 살피러 올 곳이 없어져 저절로 사라진다.
+export type ResidentPhase = 'using' | 'refuge' | 'returning' | 'searching'
 export type ResidentTargetKind =
   | 'protected-flower'
   | 'edit-flower'
@@ -25,6 +29,9 @@ export type ResidentTarget = Readonly<{
 export type SmallResidentOpportunities = Readonly<{
   butterfly: readonly ResidentTarget[]
   snail: readonly ResidentTarget[]
+  /** 아직 이 생물이 쓸 자리가 없는 흙자리의 중심이다. 들러서 살피기만 한다. */
+  butterflySearch?: readonly Point2[]
+  snailSearch?: readonly Point2[]
 }>
 
 export type ResidentRuntime = Readonly<{
@@ -37,6 +44,9 @@ export type ResidentRuntime = Readonly<{
   motionFrom: Point2
   motionProgress: number
   phaseSeconds: number
+  searchAt?: Point2
+  /** 살피기와 실제 이용을 번갈아 한다. 살피기만 반복하지 않는다. */
+  searchedLast?: boolean
 }>
 
 export type SmallResidentsState = Readonly<{
@@ -56,6 +66,7 @@ export type ResidentLeaveReason =
   | 'player-near'
   | 'active-edit-zone'
   | 'use-complete'
+  | 'search-complete'
 
 export type ResidentEvent =
   | Readonly<{
@@ -75,6 +86,8 @@ export type ResidentEvent =
       kind: SmallResidentKind
       targetId: string
     }>
+  | Readonly<{ type: 'started-search'; kind: SmallResidentKind; at: Point2 }>
+  | Readonly<{ type: 'reached-search'; kind: SmallResidentKind; at: Point2 }>
 
 export type SmallResidentsUpdate = Readonly<{
   state: SmallResidentsState
@@ -87,6 +100,8 @@ export type ResidentTuning = Readonly<{
   useDuration: number
   refugeDuration: number
   travelSpeed: number
+  /** 빈 흙을 살피며 머무는 시간. 이용보다 짧아 `못 쓰고 간다`로 읽힌다. */
+  searchDuration: number
 }>
 
 export type SmallResidentsTuning = Readonly<Record<SmallResidentKind, ResidentTuning>>
@@ -120,6 +135,9 @@ export const FIRST_MAP_SMALL_RESIDENT_TUNING: SmallResidentsTuning = {
     useDuration: 5.5,
     refugeDuration: 2.8,
     travelSpeed: 3.2,
+    // 내려가려다 되돌아 오르는 몸짓이 두 번 보일 만큼만 머문다.
+    // 한 번이면 놓치기 쉽고, 더 길면 앉아 쉬는 것처럼 읽힌다.
+    searchDuration: 3,
   },
   'land-snail': {
     alertDistance: 1.45,
@@ -127,6 +145,7 @@ export const FIRST_MAP_SMALL_RESIDENT_TUNING: SmallResidentsTuning = {
     useDuration: 8,
     refugeDuration: 5.8,
     travelSpeed: 0.48,
+    searchDuration: 3.2,
   },
 }
 
@@ -287,8 +306,46 @@ function advanceResident(
   opportunities: readonly ResidentTarget[],
   input: SmallResidentsInput,
   tuning: ResidentTuning,
+  searchSpots: readonly Point2[] = [],
 ): ResidentAdvance {
   const delta = safeDelta(input.deltaSeconds)
+
+  if (runtime.phase === 'searching') {
+    const spot = runtime.searchAt
+    if (!spot) {
+      return startRefuge(runtime, 'search-complete')
+    }
+    if (distance(runtime.position, input.playerAt) <= tuning.alertDistance) {
+      return startRefuge(runtime, 'player-near')
+    }
+    if (runtime.motionProgress < 1) {
+      const journey = Math.max(0.001, distance(runtime.motionFrom, spot))
+      const progress = Math.min(
+        1,
+        runtime.motionProgress + (delta * tuning.travelSpeed) / journey,
+      )
+      const arrived = progress >= 1
+      return {
+        runtime: {
+          ...runtime,
+          position: interpolate(runtime.motionFrom, spot, progress),
+          motionProgress: progress,
+          phaseSeconds: arrived ? 0 : runtime.phaseSeconds,
+        },
+        events: arrived
+          ? [{ type: 'reached-search', kind: runtime.kind, at: copyPoint(spot) }]
+          : [],
+      }
+    }
+    // 잠시 살피고는 아무것도 하지 못한 채 그냥 돌아간다.
+    if (runtime.phaseSeconds + delta >= tuning.searchDuration) {
+      return startRefuge(runtime, 'search-complete')
+    }
+    return {
+      runtime: { ...runtime, phaseSeconds: runtime.phaseSeconds + delta },
+      events: [],
+    }
+  }
 
   if (runtime.phase === 'using') {
     const currentTarget = targetStillExists(runtime.target, opportunities)
@@ -339,26 +396,53 @@ function advanceResident(
     }
 
     const quietSeconds = runtime.phaseSeconds + delta
-    const target =
-      quietSeconds >= tuning.refugeDuration
-        ? selectNextEligibleTarget(
-            opportunities,
-            runtime.lastTargetId,
-            (candidate) =>
-              targetIsQuiet(
-                candidate,
-                input.playerAt,
-                input.activeEditZoneId,
-                tuning,
-              ),
-          )
-        : undefined
+    const rested = quietSeconds >= tuning.refugeDuration
+
+    // 이용과 살피기를 번갈아 한다. 살피기만 반복하면 잔소리가 된다.
+    if (rested && !runtime.searchedLast) {
+      const spot = searchSpots.find(
+        (candidate) => distance(candidate, input.playerAt) >= tuning.returnDistance,
+      )
+      if (spot) {
+        return {
+          runtime: {
+            ...runtime,
+            phase: 'searching',
+            searchAt: copyPoint(spot),
+            searchedLast: true,
+            target: undefined,
+            motionFrom: copyPoint(runtime.position),
+            motionProgress: 0,
+            phaseSeconds: 0,
+          },
+          events: [
+            { type: 'started-search', kind: runtime.kind, at: copyPoint(spot) },
+          ],
+        }
+      }
+    }
+
+    const target = rested
+      ? selectNextEligibleTarget(
+          opportunities,
+          runtime.lastTargetId,
+          (candidate) =>
+            targetIsQuiet(
+              candidate,
+              input.playerAt,
+              input.activeEditZoneId,
+              tuning,
+            ),
+        )
+      : undefined
     if (target) {
       return {
         runtime: {
           ...runtime,
           phase: 'returning',
           target,
+          searchedLast: false,
+          searchAt: undefined,
           motionFrom: copyPoint(runtime.position),
           motionProgress: 0,
           phaseSeconds: 0,
@@ -426,15 +510,18 @@ export function deriveSmallResidentOpportunities(
   environment: LocalEnvironmentSnapshot,
 ): SmallResidentOpportunities {
   const butterfly: ResidentTarget[] = [BUTTERFLY_PROTECTED_FLOWER]
+  const butterflySearch: Point2[] = []
   for (const zoneId of ['a-garden', 'b-bright-soil'] as const) {
     const reading = environment.zones[zoneId]
     if (reading.light === 'shaded' || reading.opening === 'sheltered') {
       continue
     }
+    let found = 0
     for (const entry of Object.values(edit[zoneId])) {
       if (entry.kind !== 'low-flower') {
         continue
       }
+      found += 1
       butterfly.push({
         id: 'butterfly-' + entry.id,
         kind: 'edit-flower',
@@ -444,9 +531,17 @@ export function deriveSmallResidentOpportunities(
         entryId: entry.id,
       })
     }
+    // 볕은 드는데 꽃이 하나도 없는 흙이다. 나비가 들렀다 그냥 간다.
+    if (found === 0) {
+      const zone = EDIT_ZONES.find(({ id }) => id === zoneId)
+      if (zone) {
+        butterflySearch.push(copyPoint(zone.focus))
+      }
+    }
   }
 
   const snail: ResidentTarget[] = [SNAIL_PROTECTED_COVER]
+  const snailSearch: Point2[] = []
   if (
     environment.zones['b-moist-soil'].surfaceMoisture === 'moist' &&
     environment.bToC.managedCover === 'joined'
@@ -461,11 +556,20 @@ export function deriveSmallResidentOpportunities(
         entryId: cover.id,
       })
     }
+  } else {
+    // 아직 촉촉하지 않거나 덮임이 이어지지 않은 흙이다.
+    // 달팽이가 조금 건너오다 되돌아간다.
+    const zone = EDIT_ZONES.find(({ id }) => id === 'b-moist-soil')
+    if (zone) {
+      snailSearch.push(copyPoint(zone.focus))
+    }
   }
 
   return {
     butterfly: orderResidentTargets(butterfly),
     snail: orderResidentTargets(snail),
+    butterflySearch,
+    snailSearch,
   }
 }
 
@@ -518,12 +622,14 @@ export function advanceSmallResidents(
     input.opportunities.butterfly,
     input,
     tuning['day-butterfly'],
+    input.opportunities.butterflySearch,
   )
   const snail = advanceResident(
     state.snail,
     input.opportunities.snail,
     input,
     tuning['land-snail'],
+    input.opportunities.snailSearch,
   )
   return {
     state: {
