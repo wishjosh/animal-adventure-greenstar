@@ -1,11 +1,25 @@
-import { type EditEntry, type EditSnapshot, type PersistentEditState } from './edit-model.ts'
 import {
+  type EditEntry,
+  type EditSnapshot,
+  type PersistentEditState,
+  type StructureEntry,
+} from './edit-model.ts'
+import {
+  B_C_PROTECTED_COVER_PATH,
   EDIT_ZONES,
   isInsideEditZone,
+  type CareZoneId,
   type EditZone,
-  type EditZoneId,
   type Point2,
 } from '../content/first-map.ts'
+import {
+  drainageNetworkState,
+  type DrainageNetworkState,
+} from './drainage-network.ts'
+import {
+  plantGrowthInfluence,
+  type PersistentPlantGrowthState,
+} from './plant-growth.ts'
 
 export type LightState = 'bright' | 'dappled' | 'shaded'
 export type OpeningState = 'open' | 'pockets' | 'sheltered'
@@ -19,11 +33,12 @@ export type AirLane = Readonly<{
 }>
 
 export type ZoneEnvironmentReading = Readonly<{
-  zoneId: EditZoneId
+  zoneId: CareZoneId
   light: LightState
   opening: OpeningState
   surfaceMoisture: SurfaceMoistureState
   lowCover: LocalCoverPattern
+  drainage: DrainageNetworkState
   airLane?: AirLane
 }>
 
@@ -40,7 +55,7 @@ export type ConnectedCover = Readonly<{
 
 export type LocalEnvironmentSnapshot = Readonly<{
   editRevision: number
-  zones: Readonly<Record<EditZoneId, ZoneEnvironmentReading>>
+  zones: Readonly<Record<CareZoneId, ZoneEnvironmentReading>>
   bToC: Readonly<{
     protectedFoundation: ProtectedFoundation
     managedCover: ManagedCoverState
@@ -51,11 +66,11 @@ export type LocalEnvironmentSnapshot = Readonly<{
 export type MoistureSource = 'drying-exposed' | 'recent-rain' | 'water-edge'
 
 export type AmbientSurfaceConditions = Readonly<
-  Record<EditZoneId, Readonly<{ moistureSource: MoistureSource }>>
+  Record<CareZoneId, Readonly<{ moistureSource: MoistureSource }>>
 >
 
 /** `surface-moisture`가 시간에 따라 계산한 현재 표면 습기다. */
-export type SurfaceMoistureByZone = Readonly<Record<EditZoneId, SurfaceMoistureState>>
+export type SurfaceMoistureByZone = Readonly<Record<CareZoneId, SurfaceMoistureState>>
 
 type RelativeLane = Readonly<{
   from: Point2
@@ -105,21 +120,15 @@ export const FIRST_MAP_PROTECTED_FOUNDATION: ProtectedFoundation = Object.freeze
   naturalBCLink: 'connected',
 })
 
-// 관리된 B 흙자리 바깥에서 C의 피난처로 이어지는 보호 덮임이다.
-// 플레이어 편집, 되돌리기와 환경 점수의 대상이 아니다.
-export const B_C_PROTECTED_COVER_PATH: readonly Point2[] = [
-  { x: -3.55, z: -4.15 },
-  { x: -3.05, z: -4.95 },
-  { x: -2.62, z: -5.82 },
-  { x: -2.08, z: -6.7 },
-]
+// 기존 import 경로를 지키되 실제 좌표 계약은 first-map 한 곳에서 관리한다.
+export { B_C_PROTECTED_COVER_PATH }
 
 const grid3By3 = (spreadX: number, spreadZ: number): readonly Point2[] =>
   [-1, 0, 1].flatMap((z) =>
     [-1, 0, 1].map((x) => ({ x: x * spreadX, z: z * spreadZ })),
   )
 
-const SITE_LAYOUTS: Readonly<Record<EditZoneId, SiteLayout>> = {
+const SITE_LAYOUTS: Readonly<Record<CareZoneId, SiteLayout>> = {
   'a-garden': {
     baselineLight: 'bright',
     sampleOffsets: grid3By3(1.05, 0.7),
@@ -181,10 +190,137 @@ function distanceToSegment(point: Point2, from: Point2, to: Point2): number {
   )
 }
 
-function vegetation(entries: readonly EditEntry[]): readonly EditEntry[] {
+type VegetationEntry = EditEntry & { kind: 'low-flower' | 'low-cover' }
+
+function vegetation(entries: readonly EditEntry[]): readonly VegetationEntry[] {
   return entries.filter(
-    (entry) => entry.kind === 'low-flower' || entry.kind === 'low-cover',
+    (entry): entry is VegetationEntry =>
+      entry.kind === 'low-flower' || entry.kind === 'low-cover',
   )
+}
+
+function structures(entries: readonly EditEntry[]): readonly StructureEntry[] {
+  return entries.filter((entry): entry is StructureEntry => entry.kind === 'structure')
+}
+
+function structureLocalPoint(entry: StructureEntry, point: Point2): Point2 {
+  const deltaX = point.x - entry.at.x
+  const deltaZ = point.z - entry.at.z
+  const cosine = Math.cos(entry.rotation)
+  const sine = Math.sin(entry.rotation)
+  return {
+    x: cosine * deltaX + sine * deltaZ,
+    z: -sine * deltaX + cosine * deltaZ,
+  }
+}
+
+function structureLightAt(entry: StructureEntry, point: Point2): number {
+  if (entry.form === 'support') {
+    return 0
+  }
+  const local = structureLocalPoint(entry, point)
+  const profile = {
+    rack: { halfX: 0.7, halfZ: 0.5, amount: 0.34 },
+    fence: { halfX: 0.74, halfZ: 0.24, amount: 0.12 },
+    shade: { halfX: 0.78, halfZ: 0.72, amount: 1 },
+  }[entry.form]
+  return Math.abs(local.x) <= profile.halfX && Math.abs(local.z) <= profile.halfZ
+    ? profile.amount
+    : 0
+}
+
+function cross(left: Point2, middle: Point2, right: Point2): number {
+  return (middle.x - left.x) * (right.z - left.z) -
+    (middle.z - left.z) * (right.x - left.x)
+}
+
+function segmentsIntersect(
+  leftFrom: Point2,
+  leftTo: Point2,
+  rightFrom: Point2,
+  rightTo: Point2,
+): boolean {
+  const a = cross(leftFrom, leftTo, rightFrom)
+  const b = cross(leftFrom, leftTo, rightTo)
+  const c = cross(rightFrom, rightTo, leftFrom)
+  const d = cross(rightFrom, rightTo, leftTo)
+  const onSegment = (point: Point2, from: Point2, to: Point2): boolean =>
+    point.x >= Math.min(from.x, to.x) - 0.000001 &&
+    point.x <= Math.max(from.x, to.x) + 0.000001 &&
+    point.z >= Math.min(from.z, to.z) - 0.000001 &&
+    point.z <= Math.max(from.z, to.z) + 0.000001
+  if (Math.abs(a) < 0.000001 && onSegment(rightFrom, leftFrom, leftTo)) return true
+  if (Math.abs(b) < 0.000001 && onSegment(rightTo, leftFrom, leftTo)) return true
+  if (Math.abs(c) < 0.000001 && onSegment(leftFrom, rightFrom, rightTo)) return true
+  if (Math.abs(d) < 0.000001 && onSegment(leftTo, rightFrom, rightTo)) return true
+  return a * b < 0 && c * d < 0
+}
+
+function distanceBetweenSegments(
+  leftFrom: Point2,
+  leftTo: Point2,
+  rightFrom: Point2,
+  rightTo: Point2,
+): number {
+  if (segmentsIntersect(leftFrom, leftTo, rightFrom, rightTo)) {
+    return 0
+  }
+  return Math.min(
+    distanceToSegment(leftFrom, rightFrom, rightTo),
+    distanceToSegment(leftTo, rightFrom, rightTo),
+    distanceToSegment(rightFrom, leftFrom, leftTo),
+    distanceToSegment(rightTo, leftFrom, leftTo),
+  )
+}
+
+function structureAxis(entry: StructureEntry, halfLength: number): AirLane {
+  const cosine = Math.cos(entry.rotation)
+  const sine = Math.sin(entry.rotation)
+  return {
+    from: {
+      x: entry.at.x - cosine * halfLength,
+      z: entry.at.z - sine * halfLength,
+    },
+    to: {
+      x: entry.at.x + cosine * halfLength,
+      z: entry.at.z + sine * halfLength,
+    },
+  }
+}
+
+function structureBlocksLane(entry: StructureEntry, lane: AirLane): boolean {
+  if (entry.form === 'support') {
+    return false
+  }
+  const profile = {
+    rack: { halfLength: 0.58, clearance: 0.16 },
+    fence: { halfLength: 0.68, clearance: 0.22 },
+    shade: { halfLength: 0.58, clearance: 0.46 },
+  }[entry.form]
+  const axis = structureAxis(entry, profile.halfLength)
+  return distanceBetweenSegments(axis.from, axis.to, lane.from, lane.to) <= profile.clearance
+}
+
+type VegetationInfluence = Readonly<{
+  entry: VegetationEntry
+  weight: number
+}>
+
+/**
+ * 성장표를 주지 않은 기존 호출에서는 심은 식물이 곧바로 온전한 영향을 낸다.
+ * 성장표가 있으면 꽃만 실제 크기만큼 빛과 열린 틈에 영향을 주며, 낮은 덮임은
+ * 아직 별도의 성장 상태가 없으므로 기존 영향 1을 유지한다.
+ */
+function vegetationInfluences(
+  entries: readonly EditEntry[],
+  plantGrowth?: PersistentPlantGrowthState,
+): readonly VegetationInfluence[] {
+  return vegetation(entries).flatMap((entry) => {
+    const weight = entry.kind === 'low-flower' && plantGrowth
+      ? plantGrowthInfluence(plantGrowth.byEntryId[entry.id], entry.thinned)
+      : 1
+    return weight > 0 ? [{ entry, weight }] : []
+  })
 }
 
 function worldSamples(zone: EditZone, layout: SiteLayout): readonly Point2[] {
@@ -205,19 +341,24 @@ function worldLanes(zone: EditZone, layout: SiteLayout): readonly AirLane[] {
 
 function classifyLight(
   samples: readonly Point2[],
-  entries: readonly EditEntry[],
+  influences: readonly VegetationInfluence[],
+  built: readonly StructureEntry[],
   baseline: LightState,
   tuning: LocalEnvironmentTuning,
 ): LightState {
-  const influenced = samples.filter((sample) =>
-    entries.some((entry) => {
-      if (entry.kind === 'surface-adjustment') {
-        return false
-      }
+  const influenced = samples.reduce((total, sample) => {
+    const atSample = influences.reduce((sampleTotal, { entry, weight }) => {
       const radius = tuning.lightInfluence[entry.kind]
       return distanceSquared(sample, entry.at) <= radius ** 2
-    }),
-  ).length
+        ? Math.min(1, sampleTotal + weight)
+        : sampleTotal
+    }, 0)
+    const builtAtSample = built.reduce(
+      (sampleTotal, entry) => Math.min(1, sampleTotal + structureLightAt(entry, sample)),
+      0,
+    )
+    return total + Math.min(1, atSample + builtAtSample)
+  }, 0)
   const share = samples.length === 0 ? 0 : influenced / samples.length
   if (share >= tuning.shadedSampleShare) {
     return 'shaded'
@@ -230,16 +371,15 @@ function classifyLight(
 
 function classifyOpening(
   lanes: readonly AirLane[],
-  entries: readonly EditEntry[],
+  influences: readonly VegetationInfluence[],
+  built: readonly StructureEntry[],
   tuning: LocalEnvironmentTuning,
 ): Readonly<{ state: OpeningState; airLane?: AirLane }> {
   const clear = lanes.filter((lane) =>
-    entries.every((entry) => {
-      if (entry.kind === 'surface-adjustment') {
-        return true
-      }
-      return distanceToSegment(entry.at, lane.from, lane.to) > tuning.laneClearance[entry.kind]
-    }),
+    influences.every(({ entry, weight }) =>
+      distanceToSegment(entry.at, lane.from, lane.to) >
+        tuning.laneClearance[entry.kind] * weight,
+    ) && built.every((entry) => !structureBlocksLane(entry, lane)),
   )
   if (clear.length === 0) {
     return { state: 'sheltered' }
@@ -315,23 +455,27 @@ function classifyLocalCover(
 
 function evaluateZone(
   snapshot: EditSnapshot,
-  zoneId: EditZoneId,
+  zoneId: CareZoneId,
   ambient: AmbientSurfaceConditions,
   tuning: LocalEnvironmentTuning,
   moisture?: SurfaceMoistureByZone,
+  plantGrowth?: PersistentPlantGrowthState,
 ): ZoneEnvironmentReading {
   const zone = EDIT_ZONES.find(({ id }) => id === zoneId)
   if (!zone) {
     throw new Error(zoneId + ' 국소 환경 자리를 찾지 못했습니다.')
   }
   const layout = SITE_LAYOUTS[zoneId]
-  const entries = vegetation(Object.values(snapshot[zoneId]))
+  const allEntries = Object.values(snapshot[zoneId])
+  const entries = vegetation(allEntries)
+  const built = structures(allEntries)
+  const influences = vegetationInfluences(entries, plantGrowth)
   const covers = entries.filter((entry) => entry.kind === 'low-cover')
   const samples = worldSamples(zone, layout)
-  const opening = classifyOpening(worldLanes(zone, layout), entries, tuning)
+  const opening = classifyOpening(worldLanes(zone, layout), influences, built, tuning)
   return {
     zoneId,
-    light: classifyLight(samples, entries, layout.baselineLight, tuning),
+    light: classifyLight(samples, influences, built, layout.baselineLight, tuning),
     opening: opening.state,
     // 물을 준 뒤 마르는 상태는 `surface-moisture`가 시간에 따라 관리한다.
     // 그 값을 주지 않으면 자리의 기본 조건만으로 읽는다.
@@ -339,6 +483,7 @@ function evaluateZone(
       moisture?.[zoneId] ??
       (ambient[zoneId].moistureSource === 'drying-exposed' ? 'dry' : 'moist'),
     lowCover: classifyLocalCover(samples, covers, tuning),
+    drainage: drainageNetworkState(snapshot, zoneId),
     ...(opening.airLane ? { airLane: opening.airLane } : {}),
   }
 }
@@ -410,12 +555,27 @@ export function evaluateLocalEnvironment(
   ambient: AmbientSurfaceConditions = FIRST_MAP_AMBIENT_SURFACE,
   tuning: LocalEnvironmentTuning = FIRST_MAP_LOCAL_ENVIRONMENT_TUNING,
   moisture?: SurfaceMoistureByZone,
+  plantGrowth?: PersistentPlantGrowthState,
 ): LocalEnvironmentSnapshot {
   const snapshot = editState.current
-  const zones: Record<EditZoneId, ZoneEnvironmentReading> = {
-    'a-garden': evaluateZone(snapshot, 'a-garden', ambient, tuning, moisture),
-    'b-bright-soil': evaluateZone(snapshot, 'b-bright-soil', ambient, tuning, moisture),
-    'b-moist-soil': evaluateZone(snapshot, 'b-moist-soil', ambient, tuning, moisture),
+  const zones: Record<CareZoneId, ZoneEnvironmentReading> = {
+    'a-garden': evaluateZone(snapshot, 'a-garden', ambient, tuning, moisture, plantGrowth),
+    'b-bright-soil': evaluateZone(
+      snapshot,
+      'b-bright-soil',
+      ambient,
+      tuning,
+      moisture,
+      plantGrowth,
+    ),
+    'b-moist-soil': evaluateZone(
+      snapshot,
+      'b-moist-soil',
+      ambient,
+      tuning,
+      moisture,
+      plantGrowth,
+    ),
   }
   return {
     editRevision: editState.revision,

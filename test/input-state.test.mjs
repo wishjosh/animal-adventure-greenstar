@@ -57,13 +57,19 @@ test('시점·확대·일회 행동은 한 프레임 뒤 소비되고 reset은 �
   })
 })
 
-test('Space·Escape·Z는 길게 눌러도 키를 뗄 때까지 한 번만 행동한다', () => {
+test('Space·Escape·N·Z는 길게 눌러도 키를 뗄 때까지 한 번만 행동한다', () => {
   const input = new InputState()
   assert.equal(input.keyDown(' ', 0), true)
   input.keyDown(' ', 10)
   input.keyDown('Escape', 10)
+  input.keyDown('n', 10)
   input.keyDown('z', 10)
-  assert.deepEqual(input.consumeFrame(20).actions, ['interact', 'cancel', 'undo'])
+  assert.deepEqual(input.consumeFrame(20).actions, [
+    'interact',
+    'cancel',
+    'notebook',
+    'undo',
+  ])
   input.keyDown('z', 30)
   assert.deepEqual(input.consumeFrame(30).actions, [])
   input.keyUp('z')

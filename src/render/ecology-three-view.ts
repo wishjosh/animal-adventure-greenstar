@@ -1,5 +1,9 @@
 import * as THREE from 'three'
-import { terrainHeight, type Point2 } from '../content/first-map.ts'
+import {
+  terrainHeight,
+  waterSurfaceHeight,
+  type Point2,
+} from '../content/first-map.ts'
 import {
   toadRoutePointAt,
   type FireBelliedToadState,
@@ -11,6 +15,7 @@ import {
   type ResidentRuntime,
   type SmallResidentsState,
 } from '../domain/small-residents.ts'
+import { deriveToadHopMotion } from './toad-hop-motion.ts'
 
 type FadingMark = {
   mesh: THREE.Mesh<THREE.BufferGeometry, THREE.MeshBasicMaterial>
@@ -21,12 +26,10 @@ type FadingMark = {
   baseScale: THREE.Vector3
 }
 
+export type GroundHeightAt = (x: number, z: number) => number
+
 const MAX_SNAIL_TRAIL_MARKS = 20
 const MAX_TOAD_MARKS = 8
-
-// 한 번의 도약에서 땅에 있는 몫이다. 이만큼은 앞으로 나아가지 않고 웅크린다.
-// 이 멈춤이 없으면 위아래로 흔들리며 미끄러지는 것으로 보인다.
-const TOAD_CROUCH_SHARE = 0.34
 
 export class EcologyThreeView {
   private readonly scene: THREE.Scene
@@ -39,7 +42,9 @@ export class EcologyThreeView {
   private readonly rightWing = new THREE.Group()
   private readonly snailTentacles = new THREE.Group()
   private readonly toadBody = new THREE.Group()
+  private readonly toadHindLegs = new THREE.Group()
   private readonly toadEyes = new THREE.Group()
+  private readonly groundHeightAt: GroundHeightAt
   private readonly protectedFlower = new THREE.Group()
   private readonly refugeLeaves = new THREE.Group()
   private readonly snailTrailMarks: FadingMark[] = []
@@ -60,8 +65,10 @@ export class EcologyThreeView {
     scene: THREE.Scene,
     initialSmall: SmallResidentsState,
     initialToad: FireBelliedToadState,
+    groundHeightAt: GroundHeightAt = terrainHeight,
   ) {
     this.scene = scene
+    this.groundHeightAt = groundHeightAt
     this.smallState = initialSmall
     this.toadState = initialToad
     this.root.name = 'ecology-residents-and-habitat'
@@ -74,6 +81,12 @@ export class EcologyThreeView {
     this.createButterfly()
     this.createSnail()
     this.createToad()
+    this.root.traverse((object) => {
+      if (object instanceof THREE.Mesh) {
+        object.castShadow = true
+        object.receiveShadow = true
+      }
+    })
     this.reset(initialSmall, initialToad)
   }
 
@@ -108,9 +121,10 @@ export class EcologyThreeView {
         butterfly.phase === 'using'
           ? 0
           : Math.sin(butterfly.motionProgress * Math.PI) * 0.42
+      const usingHeight = butterfly.target?.heightOffset ?? 0.72
       this.butterfly.position.y =
-        terrainHeight(butterfly.position.x, butterfly.position.z) +
-        (butterfly.phase === 'using' ? 0.72 : 0.9) +
+        this.groundHeightAt(butterfly.position.x, butterfly.position.z) +
+        (butterfly.phase === 'using' ? usingHeight : 0.9) +
         travelLift +
         Math.sin(elapsed * 4.1) * 0.045
 
@@ -125,7 +139,7 @@ export class EcologyThreeView {
         this.butterfly.position.x = butterfly.position.x + Math.cos(heading) * swing
         this.butterfly.position.z = butterfly.position.z + Math.sin(heading) * swing
         this.butterfly.position.y =
-          terrainHeight(butterfly.position.x, butterfly.position.z) +
+          this.groundHeightAt(butterfly.position.x, butterfly.position.z) +
           1.28 -
           attempt * 0.26 +
           Math.sin(elapsed * 5.6) * 0.05
@@ -138,7 +152,7 @@ export class EcologyThreeView {
         this.butterfly.position.x = butterfly.position.x + Math.cos(drift) * 0.34
         this.butterfly.position.z = butterfly.position.z + Math.sin(drift) * 0.34
         this.butterfly.position.y =
-          terrainHeight(butterfly.position.x, butterfly.position.z) +
+          this.groundHeightAt(butterfly.position.x, butterfly.position.z) +
           0.94 +
           Math.sin(elapsed * 3.4) * 0.06
       }
@@ -160,30 +174,22 @@ export class EcologyThreeView {
         // 개구리는 등속으로 미끄러지지 않는다. 웅크렸다가 튀어 나가고
         // 내려앉아 잠시 멈춘다. 도메인의 등속 진행을 화면에서만 이 리듬으로
         // 다시 나눈다. 이동 속도와 도착 시각 계약은 그대로 둔다.
-        const stride = toad.routeProgress * route.hopCount
-        const landed = Math.floor(stride)
-        const withinHop = stride - landed
-        const airborne =
-          withinHop <= TOAD_CROUCH_SHARE
-            ? 0
-            : (withinHop - TOAD_CROUCH_SHARE) / (1 - TOAD_CROUCH_SHARE)
-        const spot = toadRoutePointAt(route, (landed + airborne) / route.hopCount)
+        const motion = deriveToadHopMotion(toad.routeProgress, route.hopCount)
+        const spot = toadRoutePointAt(route, motion.routeProgress)
         this.toad.position.x = spot.x
         this.toad.position.z = spot.z
-        hopLift = Math.sin(airborne * Math.PI) * 0.34
-        // 땅에 있는 동안 몸을 눌러 다음 도약을 준비한다.
-        crouch =
-          airborne > 0
-            ? 0
-            : Math.sin((withinHop / TOAD_CROUCH_SHARE) * Math.PI) * 0.22
+        hopLift = motion.lift
+        crouch = motion.crouch
       }
       const breath = toad.phase === 'using' ? Math.sin(elapsed * 2.1) * 0.018 : 0
       this.toad.position.y =
-        terrainHeight(this.toad.position.x, this.toad.position.z) +
+        this.groundHeightAt(this.toad.position.x, this.toad.position.z) +
         0.19 +
         hopLift +
         breath
       this.toadBody.scale.y = 1 + breath * 0.85 - crouch
+      const extension = Math.min(0.34, hopLift * 0.72)
+      this.toadHindLegs.scale.set(1 + extension, 1, 1 + extension * 0.82)
       const blink = toad.phase === 'using' && Math.sin(elapsed * 1.36) > 0.985
       this.toadEyes.scale.y = blink ? 0.18 : 1
     }
@@ -210,8 +216,7 @@ export class EcologyThreeView {
     if (this.disposed) {
       return
     }
-    this.clearMarks(this.snailTrailMarks)
-    this.clearMarks(this.toadMarks)
+    this.resetGroundTraces()
     this.lastButterflyPosition = undefined
     this.lastSnailPosition = undefined
     this.lastToadPosition = undefined
@@ -223,12 +228,23 @@ export class EcologyThreeView {
     this.protectedFlower.rotation.z = 0
     this.refugeLeaves.rotation.z = 0
     this.toadBody.scale.set(1, 1, 1)
+    this.toadHindLegs.scale.set(1, 1, 1)
     this.toadEyes.scale.set(1, 1, 1)
     this.smallState = small
     this.toadState = toad
     this.syncButterfly(small.butterfly, false)
     this.syncSnail(small.snail, false)
     this.syncToad(toad, [])
+  }
+
+  /** 지면이 바뀌기 전에 찍힌 흔적이 새 표면 위에 뜨거나 파묻히지 않게 없앤다. */
+  resetGroundTraces(): void {
+    if (this.disposed) {
+      return
+    }
+    this.clearMarks(this.snailTrailMarks)
+    this.clearMarks(this.toadMarks)
+    this.trailDistance = 0
   }
 
   dispose(): void {
@@ -251,8 +267,8 @@ export class EcologyThreeView {
     this.butterfly.visible = true
     this.butterfly.position.set(
       runtime.position.x,
-      terrainHeight(runtime.position.x, runtime.position.z) +
-        (runtime.phase === 'using' ? 0.72 : 0.9),
+      this.groundHeightAt(runtime.position.x, runtime.position.z) +
+        (runtime.phase === 'using' ? runtime.target?.heightOffset ?? 0.72 : 0.9),
       runtime.position.z,
     )
     this.turnToward(this.butterfly, this.lastButterflyPosition, runtime.position)
@@ -277,7 +293,7 @@ export class EcologyThreeView {
     this.snail.visible = true
     this.snail.position.set(
       runtime.position.x,
-      terrainHeight(runtime.position.x, runtime.position.z) + 0.13,
+      this.groundHeightAt(runtime.position.x, runtime.position.z) + 0.13,
       runtime.position.z,
     )
     this.turnToward(this.snail, this.lastSnailPosition, runtime.position)
@@ -314,7 +330,7 @@ export class EcologyThreeView {
     this.toad.visible = visible
     this.toad.position.set(
       state.position.x,
-      terrainHeight(state.position.x, state.position.z) + 0.19,
+      this.groundHeightAt(state.position.x, state.position.z) + 0.19,
       state.position.z,
     )
     this.turnToward(this.toad, this.lastToadPosition, state.position)
@@ -386,7 +402,7 @@ export class EcologyThreeView {
     this.protectedFlower.add(stems, petals, centers)
     this.protectedFlower.position.set(
       BUTTERFLY_PROTECTED_FLOWER.at.x,
-      terrainHeight(
+      this.groundHeightAt(
         BUTTERFLY_PROTECTED_FLOWER.at.x,
         BUTTERFLY_PROTECTED_FLOWER.at.z,
       ) + 0.04,
@@ -396,38 +412,62 @@ export class EcologyThreeView {
   }
 
   private createProtectedCover(): void {
-    const leavesPerPoint = 3
+    const sampled: Point2[] = []
+    for (let index = 0; index < B_C_PROTECTED_COVER_PATH.length - 1; index += 1) {
+      const start = B_C_PROTECTED_COVER_PATH[index]!
+      const end = B_C_PROTECTED_COVER_PATH[index + 1]!
+      const length = Math.hypot(end.x - start.x, end.z - start.z)
+      const steps = Math.max(1, Math.ceil(length / 0.38))
+      for (let step = 0; step < steps; step += 1) {
+        const amount = step / steps
+        sampled.push({
+          x: start.x + (end.x - start.x) * amount,
+          z: start.z + (end.z - start.z) * amount,
+        })
+      }
+    }
+    const last = B_C_PROTECTED_COVER_PATH.at(-1)
+    if (last) {
+      sampled.push(last)
+    }
+    const leavesPerPoint = 4
     const leaves = new THREE.InstancedMesh(
       new THREE.SphereGeometry(1, 7, 4),
-      new THREE.MeshStandardMaterial({ color: 0x596b43, roughness: 1 }),
-      B_C_PROTECTED_COVER_PATH.length * leavesPerPoint,
+      new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1 }),
+      sampled.length * leavesPerPoint,
     )
     const dummy = new THREE.Object3D()
     const offsets = [
       { x: -0.18, z: 0.02, rotation: -0.38 },
       { x: 0.16, z: -0.08, rotation: 0.55 },
       { x: 0.01, z: 0.18, rotation: 1.18 },
+      { x: 0.08, z: -0.2, rotation: 1.82 },
     ]
     let instance = 0
-    B_C_PROTECTED_COVER_PATH.forEach((point, pointIndex) => {
+    sampled.forEach((point, pointIndex) => {
       offsets.forEach((offset, leafIndex) => {
         dummy.position.set(
           point.x + offset.x,
-          terrainHeight(point.x, point.z) + 0.15 + leafIndex * 0.012,
+          this.groundHeightAt(point.x, point.z) + 0.13 + leafIndex * 0.014,
           point.z + offset.z,
         )
         dummy.rotation.set(0, offset.rotation + pointIndex * 1.37, 0)
         dummy.scale.set(
-          0.27 + ((pointIndex + leafIndex) % 2) * 0.03,
-          0.04,
-          0.12,
+          0.29 + ((pointIndex + leafIndex) % 2) * 0.035,
+          0.045,
+          0.13,
         )
         dummy.updateMatrix()
         leaves.setMatrixAt(instance, dummy.matrix)
+        leaves.setColorAt(
+          instance,
+          new THREE.Color((pointIndex + leafIndex) % 3 === 0 ? 0x526b43 : 0x60784a),
+        )
         instance += 1
       })
     })
     leaves.instanceMatrix.needsUpdate = true
+    leaves.instanceColor!.needsUpdate = true
     leaves.name = 'b-c-protected-cover'
     this.root.add(leaves)
   }
@@ -449,53 +489,87 @@ export class EcologyThreeView {
     })
     leaves.instanceMatrix.needsUpdate = true
     this.refugeLeaves.add(leaves)
-    this.refugeLeaves.position.set(at.x, terrainHeight(at.x, at.z) + 0.05, at.z)
+    this.refugeLeaves.position.set(at.x, this.groundHeightAt(at.x, at.z) + 0.05, at.z)
     this.root.add(this.refugeLeaves)
   }
 
   private createButterfly(): void {
     const body = new THREE.Mesh(
-      new THREE.SphereGeometry(0.1, 8, 6),
+      new THREE.SphereGeometry(0.095, 8, 6),
       new THREE.MeshStandardMaterial({ color: 0x44392e, roughness: 0.85 }),
     )
-    body.scale.set(0.72, 0.58, 1.55)
+    body.scale.set(0.68, 0.56, 1.72)
     const wingGeometry = new THREE.SphereGeometry(0.2, 9, 5)
     const wingMaterial = new THREE.MeshStandardMaterial({
-      color: 0xc9894f,
+      color: 0xd28a46,
       roughness: 0.9,
       side: THREE.DoubleSide,
     })
-    const left = new THREE.Mesh(wingGeometry, wingMaterial)
-    left.scale.set(1.15, 0.13, 0.78)
-    left.position.x = -0.19
-    const right = new THREE.Mesh(wingGeometry, wingMaterial)
-    right.scale.copy(left.scale)
-    right.position.x = 0.19
-    this.leftWing.add(left)
-    this.rightWing.add(right)
+    const rearWingMaterial = new THREE.MeshStandardMaterial({
+      color: 0xe1ad5e,
+      roughness: 0.9,
+      side: THREE.DoubleSide,
+    })
+    const markMaterial = new THREE.MeshStandardMaterial({
+      color: 0x4f3d2e,
+      roughness: 0.88,
+      side: THREE.DoubleSide,
+    })
+    for (const [side, wing] of [[-1, this.leftWing], [1, this.rightWing]] as const) {
+      const front = new THREE.Mesh(wingGeometry, wingMaterial)
+      front.scale.set(1.28, 0.11, 0.9)
+      front.position.set(side * 0.2, 0, 0.02)
+      const rear = new THREE.Mesh(wingGeometry, rearWingMaterial)
+      rear.scale.set(0.88, 0.1, 0.68)
+      rear.position.set(side * 0.16, -0.005, -0.15)
+      const mark = new THREE.Mesh(new THREE.SphereGeometry(0.047, 7, 4), markMaterial)
+      mark.scale.set(1.15, 0.16, 0.76)
+      mark.position.set(side * 0.3, 0.03, 0.02)
+      wing.add(front, rear, mark)
+    }
+    const antennaMaterial = new THREE.MeshStandardMaterial({ color: 0x3b342c, roughness: 1 })
+    for (const side of [-1, 1]) {
+      const antenna = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.009, 0.012, 0.27, 5),
+        antennaMaterial,
+      )
+      antenna.rotation.x = Math.PI / 2.35
+      antenna.rotation.z = side * 0.2
+      antenna.position.set(side * 0.035, 0.015, 0.18)
+      this.butterfly.add(antenna)
+    }
     this.butterfly.add(body, this.leftWing, this.rightWing)
+    this.butterfly.scale.setScalar(1.36)
     this.root.add(this.butterfly)
   }
 
   private createSnail(): void {
-    const body = new THREE.Mesh(
-      new THREE.SphereGeometry(0.16, 9, 6),
-      new THREE.MeshStandardMaterial({ color: 0x918c5d, roughness: 0.92 }),
-    )
-    body.scale.set(0.72, 0.48, 1.65)
-    body.position.z = 0.08
+    const bodyMaterial = new THREE.MeshStandardMaterial({ color: 0x918c5d, roughness: 0.92 })
+    const foot = new THREE.Mesh(new THREE.SphereGeometry(0.15, 9, 6), bodyMaterial)
+    foot.scale.set(0.76, 0.24, 1.82)
+    foot.position.set(0, -0.015, 0.01)
+    const head = new THREE.Mesh(new THREE.SphereGeometry(0.13, 9, 6), bodyMaterial)
+    head.scale.set(0.86, 0.72, 1.06)
+    head.position.set(0, 0.075, 0.24)
     const shell = new THREE.Mesh(
       new THREE.SphereGeometry(0.19, 10, 7),
       new THREE.MeshStandardMaterial({ color: 0xb2743f, roughness: 0.88 }),
     )
-    shell.scale.set(0.95, 1, 0.5)
-    shell.position.set(0, 0.16, -0.04)
-    const shellRing = new THREE.Mesh(
-      new THREE.TorusGeometry(0.085, 0.014, 5, 12),
-      new THREE.MeshStandardMaterial({ color: 0x5b402d, roughness: 0.9 }),
-    )
-    shellRing.rotation.x = Math.PI / 2
-    shellRing.position.set(0, 0.35, -0.04)
+    shell.scale.set(0.52, 1, 0.95)
+    shell.position.set(0, 0.17, -0.05)
+    const shellMarks = new THREE.Group()
+    const shellMarkMaterial = new THREE.MeshStandardMaterial({ color: 0x5b402d, roughness: 0.9 })
+    for (const side of [-1, 1]) {
+      for (const [radius, tube] of [[0.086, 0.014], [0.044, 0.009]] as const) {
+        const ring = new THREE.Mesh(
+          new THREE.TorusGeometry(radius, tube, 5, 12),
+          shellMarkMaterial,
+        )
+        ring.rotation.y = Math.PI / 2
+        ring.position.set(side * 0.106, 0.17, -0.05)
+        shellMarks.add(ring)
+      }
+    }
 
     const stalks = new THREE.InstancedMesh(
       new THREE.CylinderGeometry(0.012, 0.018, 0.2, 5),
@@ -522,63 +596,68 @@ export class EcologyThreeView {
     stalks.instanceMatrix.needsUpdate = true
     tips.instanceMatrix.needsUpdate = true
     this.snailTentacles.add(stalks, tips)
-    this.snail.add(body, shell, shellRing, this.snailTentacles)
-    this.snail.scale.setScalar(1.18)
+    this.snail.add(foot, head, shell, shellMarks, this.snailTentacles)
+    this.snail.scale.setScalar(1.28)
     this.root.add(this.snail)
   }
 
   private createToad(): void {
     const backMaterial = new THREE.MeshStandardMaterial({
-      color: 0x657052,
+      color: 0x66724f,
       roughness: 0.96,
     })
     const sideMaterial = new THREE.MeshStandardMaterial({
-      color: 0x555d43,
+      color: 0x505a40,
       roughness: 0.98,
     })
-    const torso = new THREE.Mesh(new THREE.SphereGeometry(0.3, 12, 8), backMaterial)
-    torso.scale.set(1.05, 0.5, 1.18)
+    const torso = new THREE.Mesh(new THREE.SphereGeometry(0.31, 12, 8), backMaterial)
+    torso.scale.set(1.08, 0.45, 1.12)
     torso.position.z = -0.05
-    const head = new THREE.Mesh(new THREE.SphereGeometry(0.25, 12, 8), backMaterial)
-    head.scale.set(1.12, 0.58, 0.78)
-    head.position.set(0, 0.02, 0.29)
+    const head = new THREE.Mesh(new THREE.SphereGeometry(0.26, 12, 8), backMaterial)
+    head.scale.set(1.22, 0.52, 0.76)
+    head.position.set(0, 0.015, 0.28)
 
-    const eyes = new THREE.InstancedMesh(
-      new THREE.SphereGeometry(0.055, 8, 6),
-      new THREE.MeshStandardMaterial({ color: 0x24291f, roughness: 0.62 }),
-      2,
-    )
-    const legs = new THREE.InstancedMesh(
-      new THREE.CapsuleGeometry(0.055, 0.21, 3, 6),
-      sideMaterial,
-      4,
-    )
-    const dummy = new THREE.Object3D()
-    ;[-1, 1].forEach((side, index) => {
-      dummy.position.set(side * 0.13, 0.16, 0.38)
-      dummy.rotation.set(0, 0, 0)
-      dummy.scale.set(1, 1, 1)
-      dummy.updateMatrix()
-      eyes.setMatrixAt(index, dummy.matrix)
+    const eyeMaterial = new THREE.MeshStandardMaterial({ color: 0x9c9b58, roughness: 0.7 })
+    const pupilMaterial = new THREE.MeshStandardMaterial({ color: 0x20251c, roughness: 0.58 })
+    for (const side of [-1, 1]) {
+      const eye = new THREE.Mesh(new THREE.SphereGeometry(0.061, 8, 6), eyeMaterial)
+      eye.position.set(side * 0.145, 0.145, 0.39)
+      const pupil = new THREE.Mesh(new THREE.SphereGeometry(0.033, 8, 6), pupilMaterial)
+      pupil.position.set(side * 0.148, 0.157, 0.433)
+      this.toadEyes.add(eye, pupil)
 
-      dummy.position.set(side * 0.29, -0.02, -0.13)
-      dummy.rotation.set(0, side * 0.42, Math.PI / 2)
-      dummy.scale.set(1.15, 1.12, 1.15)
-      dummy.updateMatrix()
-      legs.setMatrixAt(index * 2, dummy.matrix)
+      const thigh = new THREE.Mesh(new THREE.CapsuleGeometry(0.075, 0.22, 3, 7), sideMaterial)
+      thigh.rotation.set(Math.PI / 2, side * 0.5, Math.PI / 2)
+      thigh.position.set(side * 0.34, -0.025, -0.12)
+      const shin = new THREE.Mesh(new THREE.CapsuleGeometry(0.055, 0.24, 3, 7), sideMaterial)
+      shin.rotation.set(Math.PI / 2, -side * 0.38, Math.PI / 2)
+      shin.position.set(side * 0.48, -0.075, -0.31)
+      const foot = new THREE.Mesh(new THREE.SphereGeometry(0.075, 8, 5), sideMaterial)
+      foot.scale.set(1.35, 0.35, 0.78)
+      foot.position.set(side * 0.58, -0.105, -0.42)
+      this.toadHindLegs.add(thigh, shin, foot)
 
-      dummy.position.set(side * 0.21, -0.05, 0.28)
-      dummy.rotation.set(0, -side * 0.35, Math.PI / 2)
-      dummy.scale.set(0.72, 0.82, 0.72)
-      dummy.updateMatrix()
-      legs.setMatrixAt(index * 2 + 1, dummy.matrix)
-    })
-    eyes.instanceMatrix.needsUpdate = true
-    legs.instanceMatrix.needsUpdate = true
-    this.toadEyes.add(eyes)
-    this.toadBody.add(torso, head, legs, this.toadEyes)
-    this.toad.add(this.toadBody)
-    this.toad.scale.setScalar(1.08)
+      const frontLeg = new THREE.Mesh(new THREE.CapsuleGeometry(0.042, 0.16, 3, 6), sideMaterial)
+      frontLeg.rotation.set(0, -side * 0.3, Math.PI / 2)
+      frontLeg.position.set(side * 0.23, -0.065, 0.27)
+      this.toadBody.add(frontLeg)
+    }
+
+    const spotMaterial = new THREE.MeshStandardMaterial({ color: 0x46503a, roughness: 1 })
+    const spots = [
+      { x: -0.13, z: -0.06, size: 0.07 },
+      { x: 0.12, z: -0.17, size: 0.055 },
+      { x: 0.02, z: 0.08, size: 0.045 },
+    ]
+    for (const spot of spots) {
+      const mark = new THREE.Mesh(new THREE.SphereGeometry(spot.size, 7, 4), spotMaterial)
+      mark.scale.y = 0.18
+      mark.position.set(spot.x, 0.145, spot.z)
+      this.toadBody.add(mark)
+    }
+    this.toadBody.add(torso, head, this.toadEyes)
+    this.toad.add(this.toadHindLegs, this.toadBody)
+    this.toad.scale.setScalar(1.34)
     this.root.add(this.toad)
   }
 
@@ -597,7 +676,7 @@ export class EcologyThreeView {
     )
     mesh.rotation.x = -Math.PI / 2
     mesh.scale.set(1.8, 0.52, 1)
-    mesh.position.set(at.x, terrainHeight(at.x, at.z) + 0.11, at.z)
+    mesh.position.set(at.x, this.groundHeightAt(at.x, at.z) + 0.032, at.z)
     this.transientRoot.add(mesh)
     this.snailTrailMarks.push({
       mesh,
@@ -622,7 +701,7 @@ export class EcologyThreeView {
       }),
     )
     mesh.rotation.x = -Math.PI / 2
-    mesh.position.set(at.x, terrainHeight(at.x, at.z) + 0.2, at.z)
+    mesh.position.set(at.x, waterSurfaceHeight(at.x, at.z) + 0.04, at.z)
     this.transientRoot.add(mesh)
     this.toadMarks.push({
       mesh,
@@ -649,7 +728,7 @@ export class EcologyThreeView {
     )
     mesh.rotation.x = -Math.PI / 2
     mesh.scale.set(1.6, 0.74, 1)
-    mesh.position.set(at.x, terrainHeight(at.x, at.z) + 0.1, at.z)
+    mesh.position.set(at.x, this.groundHeightAt(at.x, at.z) + 0.1, at.z)
     this.transientRoot.add(mesh)
     this.toadMarks.push({
       mesh,
