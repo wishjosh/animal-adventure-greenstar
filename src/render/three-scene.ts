@@ -225,8 +225,12 @@ export class ThreeScene {
   private readonly playerTorso = new THREE.Group()
   private readonly playerLeftArm = new THREE.Group()
   private readonly playerRightArm = new THREE.Group()
+  private readonly playerLeftElbow = new THREE.Group()
+  private readonly playerRightElbow = new THREE.Group()
   private readonly playerLeftLeg = new THREE.Group()
   private readonly playerRightLeg = new THREE.Group()
+  private readonly playerLeftKnee = new THREE.Group()
+  private readonly playerRightKnee = new THREE.Group()
   private readonly playerHead = new THREE.Group()
   private previousPlayerAt: Point2 | undefined
   private playerWalkPhase = 0
@@ -748,12 +752,19 @@ export class ThreeScene {
     if (walking) {
       this.playerWalkPhase += frameDelta * 8.2
     }
-    const gait = Math.sin(this.playerWalkPhase) * this.playerWalkBlend
+    const gaitWave = Math.sin(this.playerWalkPhase)
+    const gait = gaitWave * this.playerWalkBlend
     const crossing = Math.cos(this.playerWalkPhase)
-    const armSwing = gait * 0.46
-    const legSwing = gait * 0.42
-    const leftFootLift = Math.max(0, crossing) * this.playerWalkBlend * 0.06
-    const rightFootLift = Math.max(0, -crossing) * this.playerWalkBlend * 0.06
+    const armSwing = gait * 0.4
+    const legSwing = gait * 0.38
+    const leftElbowBend = -(
+      0.2 + Math.max(0, -gaitWave) * 0.32
+    ) * this.playerWalkBlend
+    const rightElbowBend = -(
+      0.2 + Math.max(0, gaitWave) * 0.32
+    ) * this.playerWalkBlend
+    const leftKneeBend = Math.max(0, crossing) * this.playerWalkBlend * 0.95
+    const rightKneeBend = Math.max(0, -crossing) * this.playerWalkBlend * 0.95
     this.playerLeftArm.rotation.x = THREE.MathUtils.lerp(
       this.playerLeftArm.rotation.x,
       armSwing,
@@ -762,6 +773,16 @@ export class ThreeScene {
     this.playerRightArm.rotation.x = THREE.MathUtils.lerp(
       this.playerRightArm.rotation.x,
       -armSwing,
+      settle,
+    )
+    this.playerLeftElbow.rotation.x = THREE.MathUtils.lerp(
+      this.playerLeftElbow.rotation.x,
+      leftElbowBend,
+      settle,
+    )
+    this.playerRightElbow.rotation.x = THREE.MathUtils.lerp(
+      this.playerRightElbow.rotation.x,
+      rightElbowBend,
       settle,
     )
     this.playerLeftLeg.rotation.x = THREE.MathUtils.lerp(
@@ -774,14 +795,14 @@ export class ThreeScene {
       legSwing,
       settle,
     )
-    this.playerLeftLeg.position.y = THREE.MathUtils.lerp(
-      this.playerLeftLeg.position.y,
-      0.72 + leftFootLift,
+    this.playerLeftKnee.rotation.x = THREE.MathUtils.lerp(
+      this.playerLeftKnee.rotation.x,
+      leftKneeBend,
       settle,
     )
-    this.playerRightLeg.position.y = THREE.MathUtils.lerp(
-      this.playerRightLeg.position.y,
-      0.72 + rightFootLift,
+    this.playerRightKnee.rotation.x = THREE.MathUtils.lerp(
+      this.playerRightKnee.rotation.x,
+      rightKneeBend,
       settle,
     )
     const shoulderTwist = gait * 0.09
@@ -811,7 +832,7 @@ export class ThreeScene {
       -sideLean * 0.55,
       settle,
     )
-    const bob = this.playerWalkBlend * (0.018 - Math.cos(this.playerWalkPhase * 2) * 0.012)
+    const bob = this.playerWalkBlend * (0.012 - Math.cos(this.playerWalkPhase * 2) * 0.008)
     const lateralSway = gait * 0.012
     this.player.position.set(
       snapshot.playerAt.x + Math.cos(snapshot.playerHeading) * lateralSway,
@@ -3324,72 +3345,98 @@ export class ThreeScene {
     const paleWood = new THREE.MeshStandardMaterial({
       color: 0xd0aa73,
       roughness: 0.9,
-      flatShading: true,
     })
     const endGrain = new THREE.MeshStandardMaterial({
       color: 0xb9824d,
       roughness: 0.94,
-      flatShading: true,
     })
     const cord = new THREE.MeshStandardMaterial({
       color: 0xf0ede3,
       roughness: 0.98,
     })
 
-    const torso = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.58, 0.27), paleWood)
-    torso.name = 'simple-rope-doll-torso'
-    const neckCord = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.13, 7), cord)
-    neckCord.position.y = 0.35
-    this.playerTorso.position.y = 1.01
+    const torso = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.17, 0.19, 0.5, 24),
+      paleWood,
+    )
+    torso.name = 'simple-rope-doll-cylinder-torso'
+    const neckCord = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.032, 0.032, 0.12, 12),
+      cord,
+    )
+    neckCord.position.y = 0.3
+    this.playerTorso.position.y = 1.02
     this.playerTorso.add(torso, neckCord)
 
-    this.playerHead.position.y = 1.61
-    const head = new THREE.Mesh(new THREE.SphereGeometry(0.275, 10, 8), paleWood)
+    this.playerHead.position.y = 1.58
+    const head = new THREE.Mesh(new THREE.SphereGeometry(0.25, 24, 16), paleWood)
     head.name = 'plain-wooden-head'
     const nose = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.02, 0.042, 0.16, 7),
+      new THREE.CylinderGeometry(0.018, 0.038, 0.145, 14),
       endGrain,
     )
     nose.name = 'small-wooden-nose'
     nose.rotation.x = Math.PI / 2
-    nose.position.set(0, -0.025, 0.3)
+    nose.position.set(0, -0.02, 0.27)
     this.playerHead.add(head, nose)
 
-    const addArm = (root: THREE.Group, side: -1 | 1): void => {
-      root.position.set(side * 0.245, 1.23, 0)
+    const addArm = (
+      root: THREE.Group,
+      elbowRoot: THREE.Group,
+      side: -1 | 1,
+    ): void => {
+      root.position.set(side * 0.22, 1.21, 0)
       root.rotation.z = -side * 0.08
-      const shoulder = new THREE.Mesh(new THREE.SphereGeometry(0.055, 7, 5), endGrain)
-      const upperCord = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.025, 0.25, 6), cord)
-      upperCord.position.y = -0.15
-      const elbow = new THREE.Mesh(new THREE.SphereGeometry(0.062, 7, 5), paleWood)
-      elbow.position.y = -0.3
-      const lowerCord = new THREE.Mesh(new THREE.CylinderGeometry(0.023, 0.023, 0.24, 6), cord)
-      lowerCord.position.y = -0.44
-      const hand = new THREE.Mesh(new THREE.SphereGeometry(0.085, 8, 6), endGrain)
+      const shoulder = new THREE.Mesh(new THREE.SphereGeometry(0.05, 18, 12), endGrain)
+      const upperCord = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.023, 0.023, 0.22, 12),
+        cord,
+      )
+      upperCord.position.y = -0.14
+      elbowRoot.position.y = -0.28
+      const elbow = new THREE.Mesh(new THREE.SphereGeometry(0.055, 18, 12), paleWood)
+      const lowerCord = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.021, 0.021, 0.22, 12),
+        cord,
+      )
+      lowerCord.position.y = -0.135
+      const hand = new THREE.Mesh(new THREE.SphereGeometry(0.075, 20, 14), endGrain)
       hand.scale.set(0.72, 1.08, 0.5)
-      hand.position.y = -0.61
-      root.add(shoulder, upperCord, elbow, lowerCord, hand)
+      hand.position.y = -0.3
+      elbowRoot.add(elbow, lowerCord, hand)
+      root.add(shoulder, upperCord, elbowRoot)
     }
 
-    const addLeg = (root: THREE.Group, side: -1 | 1): void => {
-      root.position.set(side * 0.115, 0.72, 0)
-      const hip = new THREE.Mesh(new THREE.SphereGeometry(0.06, 7, 5), endGrain)
-      const upperCord = new THREE.Mesh(new THREE.CylinderGeometry(0.027, 0.027, 0.25, 6), cord)
-      upperCord.position.y = -0.15
-      const knee = new THREE.Mesh(new THREE.SphereGeometry(0.067, 7, 5), paleWood)
-      knee.position.y = -0.3
-      const lowerCord = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.025, 0.25, 6), cord)
-      lowerCord.position.y = -0.45
-      const foot = new THREE.Mesh(new THREE.SphereGeometry(0.105, 8, 6), endGrain)
-      foot.scale.set(1.05, 0.4, 1.55)
-      foot.position.set(0, -0.63, 0.055)
-      root.add(hip, upperCord, knee, lowerCord, foot)
+    const addLeg = (
+      root: THREE.Group,
+      kneeRoot: THREE.Group,
+      side: -1 | 1,
+    ): void => {
+      root.position.set(side * 0.105, 0.75, 0)
+      const hip = new THREE.Mesh(new THREE.SphereGeometry(0.055, 18, 12), endGrain)
+      const upperCord = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.025, 0.025, 0.27, 12),
+        cord,
+      )
+      upperCord.position.y = -0.165
+      kneeRoot.position.y = -0.33
+      const knee = new THREE.Mesh(new THREE.SphereGeometry(0.06, 18, 12), paleWood)
+      const lowerCord = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.023, 0.023, 0.29, 12),
+        cord,
+      )
+      lowerCord.position.y = -0.17
+      const foot = new THREE.Mesh(new THREE.SphereGeometry(0.1, 20, 14), endGrain)
+      foot.scale.set(1.05, 0.36, 1.55)
+      foot.position.set(0, -0.36, 0.055)
+      kneeRoot.add(knee, lowerCord, foot)
+      root.add(hip, upperCord, kneeRoot)
     }
 
-    addArm(this.playerLeftArm, -1)
-    addArm(this.playerRightArm, 1)
-    addLeg(this.playerLeftLeg, -1)
-    addLeg(this.playerRightLeg, 1)
+    addArm(this.playerLeftArm, this.playerLeftElbow, -1)
+    addArm(this.playerRightArm, this.playerRightElbow, 1)
+    addLeg(this.playerLeftLeg, this.playerLeftKnee, -1)
+    addLeg(this.playerRightLeg, this.playerRightKnee, 1)
     this.player.add(
       this.playerTorso,
       this.playerHead,
