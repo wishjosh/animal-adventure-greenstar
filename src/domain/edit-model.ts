@@ -6,6 +6,7 @@ import {
   UPSTREAM_SPUR,
   WATER_CHANNEL,
   WATER_COURSE,
+  distanceToPolygon,
   distanceToPolyline,
   distanceToSegment,
   isInsideEditZone,
@@ -182,6 +183,10 @@ export const DRAINAGE_SEGMENT_DEPTH = 0.12
 export const DRAINAGE_CONNECTION_REACH = 0.18
 export const MAX_DRAINAGE_SEGMENTS_PER_ZONE = 8
 export const MAX_STRUCTURES_PER_ZONE = 8
+/** 북돋운 흙 한 덩이가 새로 관리 가능한 땅으로 이어지는 반경이다. */
+export const MANAGED_SOIL_PATCH_RADIUS = 0.72
+/** 새 흙은 기존 흙이나 먼저 북돋운 흙과 실제로 맞닿아야 한다. */
+export const MANAGED_SOIL_LINK_REACH = 1.02
 
 export type StructureFootprint = Readonly<{
   halfLength: number
@@ -217,6 +222,93 @@ export function editEntryFootprintRadius(entry: EditEntry): number {
     return Math.hypot(entry.length / 2, DRAINAGE_SEGMENT_HALF_WIDTH)
   }
   return FOOTPRINT_RADIUS[entry.kind]
+}
+
+function surfaceAdjustments(
+  source: TerrainStateSource,
+  zoneId: EditZoneId,
+  ignoreId?: string,
+): readonly EditEntry[] {
+  return Object.values(editSnapshotOf(source)[zoneId]).filter(
+    (entry) => entry.kind === 'surface-adjustment' && entry.id !== ignoreId,
+  )
+}
+
+/**
+ * 원래 관리 흙과 이어 붙인 북돋운 흙을 하나의 식재 영역으로 읽는다.
+ * 바깥 패치에서는 식물 중심뿐 아니라 보이는 잎도 흙 위에 머물도록 작은 여백을 둔다.
+ */
+export function isInsideManagedSoil(
+  source: TerrainStateSource,
+  zoneId: EditZoneId,
+  point: Point2,
+  footprintRadius = 0,
+  ignoreAdjustmentId?: string,
+): boolean {
+  const zone = EDIT_ZONES.find(({ id }) => id === zoneId)
+  if (!zone) {
+    return false
+  }
+  if (isInsideEditZone(point, zone, footprintRadius)) {
+    return true
+  }
+  const edgeAllowance = Math.min(0.2, Math.max(0, footprintRadius) * 0.38)
+  const usableRadius = MANAGED_SOIL_PATCH_RADIUS - edgeAllowance
+  return surfaceAdjustments(source, zoneId, ignoreAdjustmentId).some(
+    (entry) => Math.hypot(entry.at.x - point.x, entry.at.z - point.z) <= usableRadius,
+  )
+}
+
+/** 이어 붙인 흙 곁에서도 같은 관리 구역으로 다시 들어갈 수 있다. */
+export function getNearbyManagedEditZone(
+  source: TerrainStateSource,
+  point: Point2,
+  reach = 1.25,
+): (typeof EDIT_ZONES)[number] | undefined {
+  const safeReach = Number.isFinite(reach) ? Math.max(0, reach) : 0
+  return EDIT_ZONES.map((zone) => {
+    const baseDistance = distanceToPolygon(point, zone.outline)
+    const extensionDistance = surfaceAdjustments(source, zone.id).reduce(
+      (nearest, entry) => Math.min(
+        nearest,
+        Math.max(
+          0,
+          Math.hypot(entry.at.x - point.x, entry.at.z - point.z) -
+            MANAGED_SOIL_PATCH_RADIUS,
+        ),
+      ),
+      Number.POSITIVE_INFINITY,
+    )
+    return { zone, distance: Math.min(baseDistance, extensionDistance) }
+  })
+    .filter(({ distance }) => distance <= safeReach)
+    .sort((left, right) =>
+      left.distance === right.distance
+        ? left.zone.id.localeCompare(right.zone.id)
+        : left.distance - right.distance,
+    )[0]?.zone
+}
+
+function canLinkManagedSoilPatch(
+  source: TerrainStateSource,
+  zoneId: EditZoneId,
+  point: Point2,
+  ignoreId?: string,
+): boolean {
+  const zone = EDIT_ZONES.find(({ id }) => id === zoneId)
+  if (!zone) {
+    return false
+  }
+  if (
+    isInsideEditZone(point, zone) ||
+    distanceToPolygon(point, zone.outline) <= MANAGED_SOIL_PATCH_RADIUS * 0.72
+  ) {
+    return true
+  }
+  return surfaceAdjustments(source, zoneId, ignoreId).some(
+    (entry) => Math.hypot(entry.at.x - point.x, entry.at.z - point.z) <=
+      MANAGED_SOIL_LINK_REACH,
+  )
 }
 
 export type DrainageSegmentEndpoints = Readonly<{
@@ -394,6 +486,18 @@ function isProtectedTerrainCenter(point: Point2): boolean {
         distanceToPolyline(point, route.points) <=
         route.width / 2 + TERRAIN_PATCH_RADIUS,
     )
+  )
+}
+
+function circleTouchesProtectedWorld(point: Point2, radius: number): boolean {
+  return (
+    distanceToPolyline(point, WATER_COURSE) <= WATER_CHANNEL.bankHalfWidth + radius ||
+    distanceToPolyline(point, UPSTREAM_SPUR) <= 0.68 + radius ||
+    ROUTES.some(
+      (route) =>
+        distanceToPolyline(point, route.points) <= route.width / 2 + radius,
+    ) ||
+    distanceToPolyline(point, B_C_PROTECTED_COVER_PATH) <= radius + 0.24
   )
 }
 
@@ -848,7 +952,27 @@ export function canPlaceEntry(
   if (kind === 'terrain-patch' && isProtectedTerrainCenter(at)) {
     return 'protected-ground'
   }
-  if (!zone || !isInsideEditZone(at, zone, FOOTPRINT_RADIUS[kind])) {
+  if (!zone) {
+    return 'outside-edit-zone'
+  }
+  const insideOriginalSoil = isInsideEditZone(at, zone, FOOTPRINT_RADIUS[kind])
+  if (kind === 'surface-adjustment') {
+    if (!canLinkManagedSoilPatch(session.state, zoneId, at, ignoreId)) {
+      return 'outside-edit-zone'
+    }
+    if (!insideOriginalSoil && circleTouchesProtectedWorld(at, MANAGED_SOIL_PATCH_RADIUS)) {
+      return 'protected-ground'
+    }
+  } else if (
+    (kind === 'low-flower' || kind === 'low-cover') &&
+    !isInsideManagedSoil(session.state, zoneId, at, FOOTPRINT_RADIUS[kind])
+  ) {
+    return 'outside-edit-zone'
+  } else if (
+    kind !== 'low-flower' &&
+    kind !== 'low-cover' &&
+    !insideOriginalSoil
+  ) {
     return 'outside-edit-zone'
   }
 
@@ -882,11 +1006,20 @@ export function canPlaceEntry(
       return distanceToSegment(at, endpoints.from, endpoints.to) <
         FOOTPRINT_RADIUS[kind] + DRAINAGE_SEGMENT_HALF_WIDTH
     }
+    const bothAreVegetation =
+      (kind === 'low-flower' || kind === 'low-cover') &&
+      (entry.kind === 'low-flower' || entry.kind === 'low-cover')
     const minimumDistance =
       kind === 'terrain-patch'
         ? MIN_TERRAIN_PATCH_CENTER_DISTANCE
         : kind === 'surface-adjustment'
         ? 0.5
+        : bothAreVegetation
+          ? kind === 'low-cover' && entry.kind === 'low-cover'
+            ? 0.3
+            : kind === 'low-flower' && entry.kind === 'low-flower'
+              ? 0.22
+              : 0.25
         : (FOOTPRINT_RADIUS[entry.kind] + FOOTPRINT_RADIUS[kind]) * 0.68
     return (entry.at.x - at.x) ** 2 + (entry.at.z - at.z) ** 2 < minimumDistance ** 2
   })
@@ -957,6 +1090,29 @@ function entriesAreEqual(left: EditEntry, right: EditEntry): boolean {
       (right.kind === 'drainage-segment' && left.length === right.length)) &&
     (left.kind !== 'structure' ||
       (right.kind === 'structure' && left.form === right.form))
+  )
+}
+
+function removingManagedSoilStrandsVegetation(
+  session: EditSession,
+  zoneId: EditZoneId,
+  adjustmentId: string,
+): boolean {
+  const remainingZone = { ...session.state.current[zoneId] }
+  delete remainingZone[adjustmentId]
+  const remainingSnapshot: EditSnapshot = {
+    ...session.state.current,
+    [zoneId]: remainingZone,
+  }
+  return Object.values(remainingZone).some(
+    (candidate) =>
+      (candidate.kind === 'low-flower' || candidate.kind === 'low-cover') &&
+      !isInsideManagedSoil(
+        remainingSnapshot,
+        zoneId,
+        candidate.at,
+        FOOTPRINT_RADIUS[candidate.kind],
+      ),
   )
 }
 
@@ -1216,6 +1372,13 @@ export function applyEdit(
   }
   if (command.type === 'restore-ground' && entry.kind !== 'surface-adjustment') {
     return unchanged(session, 'kind-not-allowed')
+  }
+  if (
+    command.type === 'restore-ground' &&
+    entry.kind === 'surface-adjustment' &&
+    removingManagedSoilStrandsVegetation(session, command.zoneId, entry.id)
+  ) {
+    return unchanged(session, 'occupied')
   }
   if (command.type === 'restore-terrain') {
     if (entry.kind !== 'terrain-patch') {

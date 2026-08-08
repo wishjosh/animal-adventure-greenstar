@@ -10,6 +10,8 @@ import {
   derivePlantGrowth,
   isAdultPlantGrowth,
   migrateLegacyLowFlowersAsAdults,
+  plantCrowdingAt,
+  plantHasRotRisk,
   plantGrowthDensity,
   plantGrowthRate,
   plantGrowthStage,
@@ -152,6 +154,36 @@ test('물, 빛, 주변 덮임이 성장 속도에 함께 영향을 준다', () =
   assert.ok(dappled < ideal)
   assert.ok(shadedDense < dappled)
   assert.equal(dry, 0)
+})
+
+test('가깝게 심은 꽃은 천천히 자라고 축축한 과밀 덮임에서는 썩음 위험이 커진다', () => {
+  const at = focus('a-garden')
+  const first = placeFlower(createEditSession(), 'a-garden', at)
+  const second = placeFlower(first.session, 'a-garden', { x: at.x + 0.24, z: at.z })
+  const third = placeFlower(second.session, 'a-garden', { x: at.x - 0.24, z: at.z })
+
+  const crowding = plantCrowdingAt(third.session.state, first.entryId)
+  assert.equal(crowding.state, 'overcrowded')
+  assert.ok(crowding.pressure > 1)
+
+  const spaciousRate = plantGrowthRate(moistBrightOpen)
+  const crowdedRate = plantGrowthRate({
+    ...moistBrightOpen,
+    crowding: crowding.state,
+  })
+  const rotRisk = plantHasRotRisk(crowding.state, {
+    surfaceMoisture: 'moist',
+    lowCover: 'dense',
+  })
+  const smotheredRate = plantGrowthRate({
+    ...moistBrightOpen,
+    lowCover: 'dense',
+    crowding: crowding.state,
+    rotRisk,
+  })
+  assert.equal(rotRisk, true)
+  assert.ok(crowdedRate < spaciousRate)
+  assert.ok(smotheredRate < crowdedRate * 0.1)
 })
 
 test('시작 전이거나 차단된 세계에서는 성장하지 않는다', () => {

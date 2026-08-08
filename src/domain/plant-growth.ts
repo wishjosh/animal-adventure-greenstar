@@ -8,6 +8,14 @@ import {
 } from './local-environment.ts'
 
 export type PlantGrowthStage = 'seed' | 'sprout' | 'young' | 'adult'
+export type PlantCrowdingState = 'spacious' | 'close' | 'overcrowded'
+
+export type PlantCrowdingReading = Readonly<{
+  state: PlantCrowdingState
+  /** 가까운 꽃과 덮임이 만드는 상대 압력이다. 저장하지 않고 현재 배치에서 파생한다. */
+  pressure: number
+  coverPressure: number
+}>
 
 /**
  * 현재 EditEntry에는 생성 시각이 없으므로 별도의 ID 기반 표에 두는 최소 확장안이다.
@@ -27,6 +35,8 @@ export type PlantGrowthConditions = Readonly<{
   surfaceMoisture: SurfaceMoistureState
   light: LightState
   lowCover: LocalCoverPattern
+  crowding?: PlantCrowdingState
+  rotRisk?: boolean
 }>
 
 export type PlantGrowthTuning = Readonly<{
@@ -36,6 +46,8 @@ export type PlantGrowthTuning = Readonly<{
   moistureMultiplier: Readonly<Record<SurfaceMoistureState, number>>
   lightMultiplier: Readonly<Record<LightState, number>>
   coverMultiplier: Readonly<Record<LocalCoverPattern, number>>
+  crowdingMultiplier: Readonly<Record<PlantCrowdingState, number>>
+  rotRiskMultiplier: number
 }>
 
 // 알맞게 물을 받은 밝고 트인 자리에서 약 1분 30초면 성체가 된다.
@@ -63,6 +75,14 @@ export const FIRST_MAP_PLANT_GROWTH_TUNING: PlantGrowthTuning = Object.freeze({
     linked: 0.7,
     dense: 0.45,
   }),
+  crowdingMultiplier: Object.freeze({
+    spacious: 1,
+    close: 0.72,
+    overcrowded: 0.24,
+  }),
+  // 축축한 흙이 겹겹이 덮여 통풍까지 막힌 동안에는 성장이 거의 멈춘다.
+  // 배치를 옮기거나 솎으면 회복되는 가역적인 위험으로 두어 식물이 사라지지는 않는다.
+  rotRiskMultiplier: 0.08,
 })
 
 export type AdvancePlantGrowthInput = Readonly<{
@@ -151,6 +171,63 @@ function lowFlowerEntries(editState: PersistentEditState): readonly CareFlowerEn
   )
 }
 
+/** 한 포기 주변의 실제 중심 간격에서 과밀 상태를 결정론적으로 읽는다. */
+export function plantCrowdingAt(
+  editState: PersistentEditState,
+  entryId: string,
+): PlantCrowdingReading {
+  let target: CareFlowerEntry | undefined
+  for (const entry of lowFlowerEntries(editState)) {
+    if (entry.id === entryId) {
+      target = entry
+      break
+    }
+  }
+  if (!target) {
+    return { state: 'spacious', pressure: 0, coverPressure: 0 }
+  }
+  const neighbours = Object.values(editState.current[target.zoneId])
+  let pressure = 0
+  let coverPressure = 0
+  for (const entry of neighbours) {
+    if (entry.id === target.id) {
+      continue
+    }
+    const distance = Math.hypot(entry.at.x - target.at.x, entry.at.z - target.at.z)
+    if (entry.kind === 'low-flower' && distance < 0.78) {
+      pressure += (1 - distance / 0.78) * (entry.thinned ? 0.56 : 1)
+    } else if (entry.kind === 'low-cover' && distance < 0.66) {
+      const influence = (1 - distance / 0.66) * 0.74
+      pressure += influence
+      coverPressure += influence
+    }
+  }
+  pressure *= target.thinned ? 0.78 : 1
+  const stablePressure = Math.round(Math.max(0, pressure) * 1_000_000) / 1_000_000
+  return {
+    state: stablePressure >= 1.05
+      ? 'overcrowded'
+      : stablePressure >= 0.35
+        ? 'close'
+        : 'spacious',
+    pressure: stablePressure,
+    coverPressure: Math.round(Math.max(0, coverPressure) * 1_000_000) / 1_000_000,
+  }
+}
+
+export function plantHasRotRisk(
+  crowding: PlantCrowdingState | PlantCrowdingReading,
+  conditions: Pick<PlantGrowthConditions, 'surfaceMoisture' | 'lowCover'>,
+): boolean {
+  const state = typeof crowding === 'string' ? crowding : crowding.state
+  const locallySmothered = typeof crowding === 'string'
+    ? false
+    : crowding.coverPressure >= 0.55
+  return state === 'overcrowded' &&
+    conditions.surfaceMoisture === 'moist' &&
+    (conditions.lowCover === 'dense' || locallySmothered)
+}
+
 function sameRecord(left: PlantGrowthRecord | undefined, right: PlantGrowthRecord): boolean {
   return (
     left?.plantedAtElapsed === right.plantedAtElapsed &&
@@ -199,7 +276,9 @@ export function plantGrowthRate(
     safeMultiplier(tuning.growthPerSecond) *
     safeMultiplier(tuning.moistureMultiplier[conditions.surfaceMoisture]) *
     safeMultiplier(tuning.lightMultiplier[conditions.light]) *
-    safeMultiplier(tuning.coverMultiplier[conditions.lowCover])
+    safeMultiplier(tuning.coverMultiplier[conditions.lowCover]) *
+    safeMultiplier(tuning.crowdingMultiplier[conditions.crowding ?? 'spacious']) *
+    (conditions.rotRisk ? safeMultiplier(tuning.rotRiskMultiplier) : 1)
   )
 }
 
@@ -229,7 +308,12 @@ export function advancePlantGrowthState(
       continue
     }
     const zone = input.environment.zones[entry.zoneId]
-    const increment = delta * plantGrowthRate(zone, tuning)
+    const crowding = plantCrowdingAt(editState, entry.id)
+    const increment = delta * plantGrowthRate({
+      ...zone,
+      crowding: crowding.state,
+      rotRisk: plantHasRotRisk(crowding, zone),
+    }, tuning)
     if (increment <= 0) {
       continue
     }
