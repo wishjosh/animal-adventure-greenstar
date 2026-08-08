@@ -2,7 +2,6 @@ import './style.css'
 import {
   EDIT_ZONES,
   assertFirstMapContract,
-  getNearbyEditZone,
   getNearbyWaterSource,
   isCareZoneId,
   type Point2,
@@ -12,13 +11,19 @@ import {
 import {
   STRUCTURE_FOOTPRINTS,
   findTerrainPatchAt,
+  getNearbyManagedEditZone,
   type EditEntry,
   type EditSnapshot,
   type EditGuard,
   type StructureForm,
 } from './domain/edit-model.ts'
 import type { ZoneEnvironmentReading } from './domain/local-environment.ts'
-import { derivePlantGrowth, type PlantGrowthStage } from './domain/plant-growth.ts'
+import {
+  derivePlantGrowth,
+  plantCrowdingAt,
+  plantHasRotRisk,
+  type PlantGrowthStage,
+} from './domain/plant-growth.ts'
 import {
   advanceUpstreamWaterway,
   createUpstreamWaterwayState,
@@ -693,6 +698,15 @@ try {
         : undefined
       const canThin = entry.kind === 'low-flower' &&
         !entry.thinned && growthStage !== undefined && growthStage !== 'seed'
+      const crowding = entry.kind === 'low-flower'
+        ? plantCrowdingAt(snapshot.editState, entry.id)
+        : undefined
+      const zoneEnvironment = isCareZoneId(snapshot.activeZoneId)
+        ? snapshot.environment.zones[snapshot.activeZoneId]
+        : undefined
+      const rotRisk = crowding && zoneEnvironment
+        ? plantHasRotRisk(crowding, zoneEnvironment)
+        : false
       editDock.innerHTML = entry.kind === 'surface-adjustment'
         ? [
             dockButton('cancel', '↩ 그만두기'),
@@ -717,7 +731,13 @@ try {
           : '꽃이 핀 포기입니다.',
       }
       setEditStatus(entry.kind === 'surface-adjustment'
-        ? '북돋운 흙을 잡았습니다.'
+        ? '이어 붙인 흙입니다. 가장자리에서 다시 넓힐 수 있습니다.'
+        : rotRisk
+          ? '너무 겹겹이 덮여 축축하고 통풍이 막혔습니다. 옮기거나 솎아 주세요.'
+          : crowding?.state === 'overcrowded'
+            ? '여러 포기가 겹쳐 성장이 많이 느립니다. 그대로 두거나 솎을 수 있습니다.'
+            : crowding?.state === 'close'
+              ? '가깝게 심겨 서로 영향을 주며 조금 천천히 자랍니다.'
         : growthStage
           ? growthWords[growthStage]
           : '심어 둔 것을 잡았습니다.')
@@ -729,7 +749,7 @@ try {
       dockButton('low-flower', '🌱 심기', editTool === 'low-flower'),
       dockButton('water', waterLabel(snapshot.wateringCanLevel), editTool === 'water', canEmpty),
       dockButton('low-cover', '🍂 덮어 주기', editTool === 'low-cover'),
-      dockButton('surface-adjustment', '⌇ 흙 북돋우기', editTool === 'surface-adjustment'),
+      dockButton('surface-adjustment', '⌇ 흙 넓히기', editTool === 'surface-adjustment'),
       dockButton('undo', '↶ 되돌리기', false, !snapshot.canUndoActiveZone),
     ].join('')
     setEditStatus()
@@ -944,8 +964,8 @@ try {
   }
 
   const describeRejection = (rejection: string | undefined): string => {
-    if (rejection === 'outside-edit-zone') return '관리된 흙 안쪽을 눌러 주세요.'
-    if (rejection === 'overlap') return '조금 떨어진 자리를 눌러 주세요.'
+    if (rejection === 'outside-edit-zone') return '관리된 흙이나 그 가장자리와 이어지는 곳을 눌러 주세요.'
+    if (rejection === 'overlap') return '중심이 완전히 포개지지 않게 손가락 하나만 옆으로 눌러 주세요.'
     if (rejection === 'nothing-to-undo') return '되돌릴 것이 없습니다.'
     if (rejection === 'occupied') return '지금 누군가 쓰는 자리는 그대로 둡니다.'
     if (rejection === 'plant-too-young') return '싹이 올라온 뒤 사이를 벌려 주세요.'
@@ -1242,10 +1262,10 @@ try {
       setEditStatus('땅, 물길, 세우기 가운데 하나를 골라 주세요.')
       return
     }
-    // 이미 심어 둔 것을 누르면 도구와 상관없이 그것을 잡는다.
-    // 겹쳐 놓기는 어차피 막혀 있으므로 잃는 조작이 없다.
+    // 도구를 내려놓은 상태에서는 기존 식물을 잡는다. 심기·덮기 도구를 든 동안에는
+    // 기존 잎 위를 눌러도 그 아래 흙에 새 포기를 겹쳐 놓을 수 있다.
     const pickedEntry = view.pickEditEntry(clientX, clientY)
-    if (pickedEntry) {
+    if (pickedEntry && !editTool) {
       selectedEntryId = pickedEntry
       renderEditDock()
       return
@@ -1287,7 +1307,7 @@ try {
         ? '씨앗을 심었습니다. 촉촉한 흙에서 천천히 자랍니다.'
         : editTool === 'low-cover'
           ? '풀잎으로 덮어 주었습니다.'
-          : '흙을 북돋웠습니다. 물을 더 오래 머금습니다.',
+          : '흙을 이어 넓혔습니다. 물도 조금 더 오래 머금습니다.',
     )
   }
 
@@ -1406,7 +1426,7 @@ try {
       const hint = {
         'low-flower': '심을 자리를 눌러 주세요.',
         'low-cover': '덮어 줄 자리를 눌러 주세요.',
-        'surface-adjustment': '북돋울 흙을 눌러 주세요.',
+        'surface-adjustment': '기존 흙 가장자리와 이어 붙일 곳을 눌러 주세요.',
         water: '물을 줄 흙을 눌러 주세요.',
       }
       if (editTool) {
@@ -1798,7 +1818,9 @@ try {
       if (isEditing()) renderEditDock()
     }
     updatePlaceCard(snapshot.place)
-    nearbyEditZone = !isEditing() ? getNearbyEditZone(snapshot.playerAt, 1.8) : undefined
+    nearbyEditZone = !isEditing()
+      ? getNearbyManagedEditZone(ecology.snapshot().editState, snapshot.playerAt, 1.8)
+      : undefined
     editEntryButton.hidden =
       !snapshot.started || snapshot.blocked || !nearbyEditZone || isEditing()
     if (nearbyEditZone) {

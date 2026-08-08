@@ -9,6 +9,7 @@ import {
   MAX_UNDO_PER_ZONE,
   MAX_TERRAIN_DELTA,
   MAX_TERRAIN_PATCHES_PER_ZONE,
+  MANAGED_SOIL_PATCH_RADIUS,
   STRUCTURE_FOOTPRINTS,
   TERRAIN_PATCH_HEIGHT_STEP,
   TERRAIN_PATCH_RADIUS,
@@ -20,7 +21,9 @@ import {
   editEntryFootprintRadius,
   editedTerrainHeight,
   findTerrainPatchAt,
+  getNearbyManagedEditZone,
   getEntry,
+  isInsideManagedSoil,
   migratePersistentEditStateV5,
   readLegacyPersistentEditState,
   readPersistentEditState,
@@ -184,6 +187,64 @@ test('조형 패치는 식물·흙손질과 공존하지만 서로 너무 가까
     at: { x: at.x + 0.47, z: at.z },
   })
   assert.equal(beside.changed, true)
+})
+
+test('꽃과 덮임은 보이는 잎이 겹칠 만큼 촘촘히 놓되 같은 중심에는 포개지지 않는다', () => {
+  const at = focus('a-garden')
+  let session = applyEdit(createEditSession(), {
+    type: 'place', zoneId: 'a-garden', kind: 'low-flower', at,
+  }).session
+  const closeFlower = applyEdit(session, {
+    type: 'place', zoneId: 'a-garden', kind: 'low-flower',
+    at: { x: at.x + 0.24, z: at.z },
+  })
+  assert.equal(closeFlower.changed, true)
+  session = closeFlower.session
+
+  const sameClump = applyEdit(session, {
+    type: 'place', zoneId: 'a-garden', kind: 'low-flower',
+    at: { x: at.x + 0.1, z: at.z },
+  })
+  assert.equal(sameClump.rejection, 'overlap')
+
+  const overlappingCover = applyEdit(session, {
+    type: 'place', zoneId: 'a-garden', kind: 'low-cover',
+    at: { x: at.x, z: at.z + 0.27 },
+  })
+  assert.equal(overlappingCover.changed, true)
+  const nextCover = applyEdit(overlappingCover.session, {
+    type: 'place', zoneId: 'a-garden', kind: 'low-cover',
+    at: { x: at.x, z: at.z + 0.59 },
+  })
+  assert.equal(nextCover.changed, true)
+})
+
+test('북돋운 흙을 원래 경계 밖으로 이어 식재 영역을 넓히고 사용 중에는 걷지 않는다', () => {
+  const extensionAt = { x: -12.8, z: 3.7 }
+  const extended = applyEdit(createEditSession(), {
+    type: 'adjust-ground', zoneId: 'a-garden', at: extensionAt,
+  })
+  assert.equal(extended.changed, true)
+  assert.equal(
+    isInsideManagedSoil(extended.session.state, 'a-garden', extensionAt),
+    true,
+  )
+  assert.equal(MANAGED_SOIL_PATCH_RADIUS > 0.6, true)
+  assert.equal(
+    getNearbyManagedEditZone(extended.session.state, { x: -13.65, z: 3.7 }, 0.2)?.id,
+    'a-garden',
+  )
+
+  const plantedAt = { x: -13.15, z: 3.7 }
+  const planted = applyEdit(extended.session, {
+    type: 'place', zoneId: 'a-garden', kind: 'low-flower', at: plantedAt,
+  })
+  assert.equal(planted.changed, true)
+
+  const blockedRestore = applyEdit(planted.session, {
+    type: 'restore-ground', zoneId: 'a-garden', id: extended.entryId,
+  })
+  assert.equal(blockedRestore.rejection, 'occupied')
 })
 
 test('조형은 허용 흙 전체 반경·본래 물길과 길 중심선·구역별 개수를 지킨다', () => {

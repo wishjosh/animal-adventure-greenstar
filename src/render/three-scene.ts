@@ -23,6 +23,7 @@ import {
 } from '../content/first-map.ts'
 import {
   DRAINAGE_SEGMENT_HALF_WIDTH,
+  MANAGED_SOIL_PATCH_RADIUS,
   STRUCTURE_FOOTPRINTS,
   createEmptyEditState,
   editedTerrainHeight,
@@ -221,6 +222,13 @@ export class ThreeScene {
   private readonly ecologyView: EcologyThreeView
   private readonly canvas: HTMLCanvasElement
   private readonly player = new THREE.Group()
+  private readonly playerLeftArm = new THREE.Group()
+  private readonly playerRightArm = new THREE.Group()
+  private readonly playerLeftLeg = new THREE.Group()
+  private readonly playerRightLeg = new THREE.Group()
+  private readonly playerHead = new THREE.Group()
+  private previousPlayerAt: Point2 | undefined
+  private playerWalkPhase = 0
   private readonly editEntryRoot = new THREE.Group()
   private readonly cameraTarget = new THREE.Vector3()
   private readonly desiredCamera = new THREE.Vector3()
@@ -388,6 +396,8 @@ export class ThreeScene {
         let group = this.editEntryGroups.get(entry.id)
         const variant = entry.kind === 'terrain-patch'
           ? entry.kind + ':' + entry.direction + ':' + terrainSignature
+          : entry.kind === 'surface-adjustment'
+            ? [entry.kind, entry.at.x, entry.at.z, terrainSignature].join(':')
           : entry.kind === 'drainage-segment'
             ? [entry.kind, entry.length, entry.at.x, entry.at.z, entry.rotation, terrainSignature]
               .join(':')
@@ -677,11 +687,14 @@ export class ThreeScene {
     if (!this.activeEditZoneId || !this.setPointerRay(clientX, clientY)) {
       return undefined
     }
-    const soil = this.soilMeshes.get(this.activeEditZoneId)
-    if (!soil) {
+    const targets = [
+      this.soilMeshes.get(this.activeEditZoneId),
+      this.terrainMesh,
+    ].filter((object): object is THREE.Mesh => object !== undefined)
+    if (targets.length === 0) {
       return undefined
     }
-    const hit = this.raycaster.intersectObject(soil, false)[0]
+    const hit = this.raycaster.intersectObjects(targets, false)[0]
     return hit ? { x: hit.point.x, z: hit.point.z } : undefined
   }
 
@@ -716,11 +729,47 @@ export class ThreeScene {
 
   render(snapshot: GameSnapshot, deltaSeconds: number): void {
     const playerGround = this.groundHeightAt(snapshot.playerAt.x, snapshot.playerAt.z)
-    const bob = snapshot.started && !snapshot.blocked
-      ? Math.sin(snapshot.elapsed * 10) * 0.035
+    const travelled = this.previousPlayerAt
+      ? Math.hypot(
+          snapshot.playerAt.x - this.previousPlayerAt.x,
+          snapshot.playerAt.z - this.previousPlayerAt.z,
+        )
       : 0
+    const walking = snapshot.started && !snapshot.blocked && travelled > 0.0005 && travelled < 0.8
+    if (walking) {
+      this.playerWalkPhase += Math.max(0, deltaSeconds) * 10.5
+    }
+    const swing = walking ? Math.sin(this.playerWalkPhase) * 0.58 : 0
+    const settle = 1 - Math.exp(-Math.max(0, deltaSeconds) * 11)
+    this.playerLeftArm.rotation.x = THREE.MathUtils.lerp(
+      this.playerLeftArm.rotation.x,
+      swing,
+      settle,
+    )
+    this.playerRightArm.rotation.x = THREE.MathUtils.lerp(
+      this.playerRightArm.rotation.x,
+      -swing,
+      settle,
+    )
+    this.playerLeftLeg.rotation.x = THREE.MathUtils.lerp(
+      this.playerLeftLeg.rotation.x,
+      -swing * 0.72,
+      settle,
+    )
+    this.playerRightLeg.rotation.x = THREE.MathUtils.lerp(
+      this.playerRightLeg.rotation.x,
+      swing * 0.72,
+      settle,
+    )
+    this.playerHead.rotation.z = THREE.MathUtils.lerp(
+      this.playerHead.rotation.z,
+      walking ? Math.sin(this.playerWalkPhase * 0.5) * 0.035 : 0,
+      settle,
+    )
+    const bob = walking ? Math.abs(Math.sin(this.playerWalkPhase)) * 0.035 : 0
     this.player.position.set(snapshot.playerAt.x, playerGround + bob, snapshot.playerAt.z)
     this.player.rotation.y = snapshot.playerHeading
+    this.previousPlayerAt = { x: snapshot.playerAt.x, z: snapshot.playerAt.z }
 
     const activeZone = EDIT_ZONES.find(({ id }) => id === this.activeEditZoneId)
     if (activeZone) {
@@ -1740,7 +1789,7 @@ export class ThreeScene {
     } else if (entry.kind === 'low-cover') {
       this.addLowCover(group, entry)
     } else if (entry.kind === 'surface-adjustment') {
-      this.addSurfaceAdjustment(group)
+      this.addSurfaceAdjustment(group, entry)
     } else if (entry.kind === 'terrain-patch') {
       this.addTerrainPatchMarker(group, entry)
     } else if (entry.kind === 'drainage-segment') {
@@ -2020,20 +2069,38 @@ export class ThreeScene {
     group.add(stem)
   }
 
-  private addSurfaceAdjustment(group: THREE.Group): void {
+  private addSurfaceAdjustment(group: THREE.Group, entry: EditEntry): void {
+    const zone = EDIT_ZONES.find(({ id }) => id === entry.zoneId)
     const material = new THREE.MeshStandardMaterial({
-      color: 0x6b553b,
+      color: zone?.soilColor ?? 0x6b553b,
       roughness: 0.9,
+      side: THREE.DoubleSide,
       polygonOffset: true,
       polygonOffsetFactor: -1,
     })
+    const managedSoil = new THREE.Mesh(
+      this.createTerrainPatchDiscGeometry(
+        entry,
+        MANAGED_SOIL_PATCH_RADIUS,
+        SOIL_LIFT + 0.012,
+      ),
+      material,
+    )
+    managedSoil.name = 'managed-soil-extension'
+    managedSoil.receiveShadow = true
+    group.add(managedSoil)
+
+    const clodMaterial = new THREE.MeshStandardMaterial({
+      color: 0x6b553b,
+      roughness: 0.96,
+    })
     for (let index = 0; index < 3; index += 1) {
       const patch = new THREE.Mesh(
-        new THREE.DodecahedronGeometry(0.38 - index * 0.035, 1),
-        material,
+        new THREE.DodecahedronGeometry(0.2 - index * 0.018, 1),
+        clodMaterial,
       )
-      patch.scale.set(1.28, 0.18 + index * 0.025, 0.76)
-      patch.position.set((index - 1) * 0.22, 0.065 + index * 0.01, Math.sin(index * 2.2) * 0.11)
+      patch.scale.set(1.22, 0.12 + index * 0.018, 0.72)
+      patch.position.set((index - 1) * 0.2, 0.035 + index * 0.008, Math.sin(index * 2.2) * 0.1)
       patch.rotation.y = index * 0.82
       group.add(patch)
     }
@@ -2610,7 +2677,7 @@ export class ThreeScene {
 
   /** 투명 선택면도 원판 여러 고리의 정점을 실제 지표에 맞춰 굽힌다. */
   private createTerrainPatchDiscGeometry(
-    entry: TerrainPatchEntry,
+    entry: EditEntry,
     radius: number,
     surfaceLift: number,
   ): THREE.BufferGeometry {
@@ -2663,7 +2730,7 @@ export class ThreeScene {
 
   /** 보이는 고리는 안팎 두 둘레 모두 현재 지표를 따라간다. */
   private createTerrainPatchRingGeometry(
-    entry: TerrainPatchEntry,
+    entry: EditEntry,
     innerRadius: number,
     outerRadius: number,
     surfaceLift: number,
@@ -3204,25 +3271,121 @@ export class ThreeScene {
   }
 
   private buildPlayer(): void {
-    const body = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.34, 0.42, 0.95, 10),
-      new THREE.MeshStandardMaterial({ color: 0x456f62, roughness: 0.8 }),
+    const paleWood = new THREE.MeshStandardMaterial({
+      color: 0xc89156,
+      roughness: 0.88,
+      flatShading: true,
+    })
+    const warmWood = new THREE.MeshStandardMaterial({
+      color: 0x9f6638,
+      roughness: 0.92,
+      flatShading: true,
+    })
+    const endGrain = new THREE.MeshStandardMaterial({
+      color: 0xe0b879,
+      roughness: 0.9,
+      flatShading: true,
+    })
+    const rope = new THREE.MeshStandardMaterial({ color: 0x5a4631, roughness: 1 })
+    const charcoal = new THREE.MeshStandardMaterial({ color: 0x322d27, roughness: 0.94 })
+    const capMaterial = new THREE.MeshStandardMaterial({ color: 0x8f4d3f, roughness: 0.9 })
+    const shirtMaterial = new THREE.MeshStandardMaterial({ color: 0x486d62, roughness: 0.92 })
+
+    const torso = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.27, 0.32, 0.62, 7),
+      warmWood,
     )
-    body.position.y = 0.65
-    body.castShadow = true
-    const head = new THREE.Mesh(
-      new THREE.SphereGeometry(0.33, 16, 12),
-      new THREE.MeshStandardMaterial({ color: 0xd8b985, roughness: 0.82 }),
+    torso.name = 'wooden-puppet-torso'
+    torso.position.y = 1.01
+    const vest = new THREE.Mesh(new THREE.BoxGeometry(0.43, 0.42, 0.075), shirtMaterial)
+    vest.position.set(0, 1.02, 0.265)
+    vest.rotation.x = -0.04
+    const waistRope = new THREE.Mesh(new THREE.TorusGeometry(0.285, 0.025, 5, 12), rope)
+    waistRope.rotation.x = Math.PI / 2
+    waistRope.position.y = 0.72
+    const neckRope = new THREE.Mesh(new THREE.CylinderGeometry(0.075, 0.075, 0.14, 8), rope)
+    neckRope.position.y = 1.37
+
+    this.playerHead.position.y = 1.58
+    const head = new THREE.Mesh(new THREE.SphereGeometry(0.28, 10, 8), paleWood)
+    head.scale.set(0.94, 1.04, 0.92)
+    const nose = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.075, 0.29, 7), endGrain)
+    nose.rotation.x = Math.PI / 2
+    nose.position.set(0, 0, 0.31)
+    for (const side of [-1, 1]) {
+      const eye = new THREE.Mesh(new THREE.SphereGeometry(0.031, 7, 5), charcoal)
+      eye.position.set(side * 0.105, 0.075, 0.245)
+      this.playerHead.add(eye)
+    }
+    const smileLeft = new THREE.Mesh(new THREE.SphereGeometry(0.022, 6, 4), charcoal)
+    smileLeft.scale.set(2.4, 0.55, 0.5)
+    smileLeft.position.set(0, -0.105, 0.255)
+    const cap = new THREE.Mesh(new THREE.ConeGeometry(0.29, 0.28, 7), capMaterial)
+    cap.position.set(0.03, 0.32, -0.015)
+    cap.rotation.z = -0.14
+    const capBrim = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.045, 0.2), capMaterial)
+    capBrim.position.set(0, 0.205, 0.19)
+    this.playerHead.add(head, nose, smileLeft, cap, capBrim)
+
+    const addArm = (root: THREE.Group, side: -1 | 1): void => {
+      root.position.set(side * 0.34, 1.25, 0)
+      root.rotation.z = -side * 0.13
+      const shoulderCord = new THREE.Mesh(
+        new THREE.TorusGeometry(0.075, 0.018, 5, 10),
+        rope,
+      )
+      shoulderCord.rotation.x = Math.PI / 2
+      const upper = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.085, 0.34, 7), paleWood)
+      upper.position.y = -0.18
+      const elbowCord = new THREE.Mesh(new THREE.TorusGeometry(0.064, 0.018, 5, 10), rope)
+      elbowCord.rotation.x = Math.PI / 2
+      elbowCord.position.y = -0.37
+      const forearm = new THREE.Mesh(new THREE.CylinderGeometry(0.058, 0.07, 0.31, 7), warmWood)
+      forearm.position.set(0, -0.54, 0.015)
+      forearm.rotation.z = side * 0.045
+      const hand = new THREE.Mesh(new THREE.SphereGeometry(0.075, 7, 5), endGrain)
+      hand.position.set(0, -0.72, 0.02)
+      root.add(shoulderCord, upper, elbowCord, forearm, hand)
+    }
+
+    const addLeg = (root: THREE.Group, side: -1 | 1): void => {
+      root.position.set(side * 0.16, 0.72, 0)
+      const hipCord = new THREE.Mesh(new THREE.TorusGeometry(0.078, 0.02, 5, 10), rope)
+      hipCord.rotation.x = Math.PI / 2
+      const thigh = new THREE.Mesh(new THREE.CylinderGeometry(0.085, 0.1, 0.34, 7), paleWood)
+      thigh.position.y = -0.18
+      const kneeCord = new THREE.Mesh(new THREE.TorusGeometry(0.072, 0.019, 5, 10), rope)
+      kneeCord.rotation.x = Math.PI / 2
+      kneeCord.position.y = -0.37
+      const shin = new THREE.Mesh(new THREE.CylinderGeometry(0.072, 0.085, 0.33, 7), warmWood)
+      shin.position.y = -0.55
+      const foot = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.11, 0.28), endGrain)
+      foot.position.set(0, -0.67, 0.07)
+      foot.rotation.x = -0.05
+      root.add(hipCord, thigh, kneeCord, shin, foot)
+    }
+
+    addArm(this.playerLeftArm, -1)
+    addArm(this.playerRightArm, 1)
+    addLeg(this.playerLeftLeg, -1)
+    addLeg(this.playerRightLeg, 1)
+    this.player.add(
+      torso,
+      vest,
+      waistRope,
+      neckRope,
+      this.playerHead,
+      this.playerLeftArm,
+      this.playerRightArm,
+      this.playerLeftLeg,
+      this.playerRightLeg,
     )
-    head.position.y = 1.38
-    head.castShadow = true
-    const direction = new THREE.Mesh(
-      new THREE.ConeGeometry(0.16, 0.38, 6),
-      new THREE.MeshStandardMaterial({ color: 0xf2d36f, roughness: 0.75 }),
-    )
-    direction.rotation.x = Math.PI / 2
-    direction.position.set(0, 0.88, 0.42)
-    this.player.add(body, head, direction)
+    this.player.traverse((object) => {
+      if (object instanceof THREE.Mesh) {
+        object.castShadow = true
+        object.receiveShadow = true
+      }
+    })
     this.scene.add(this.player)
   }
 }
