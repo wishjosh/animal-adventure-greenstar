@@ -10,6 +10,7 @@ import {
   type ToadRoute,
 } from '../domain/fire-bellied-toad.ts'
 import type { LocalEnvironmentSnapshot } from '../domain/local-environment.ts'
+import type { PersistentPlantGrowthState } from '../domain/plant-growth.ts'
 import {
   advanceSmallResidents,
   assertSmallResidentsContract,
@@ -28,6 +29,7 @@ export type ResidentsSnapshot = Readonly<{
   smallOpportunities: SmallResidentOpportunities
   toadOpportunities: readonly ToadRoute[]
   editRevision: number
+  ecologyRevision: number
   lastEventId: number
 }>
 
@@ -39,6 +41,10 @@ export type ResidentsFrameInput = Readonly<{
   activeEditZoneId?: EditZoneId
   started: boolean
   blocked: boolean
+  /** 편집 외의 성장 단계·습기 같은 생태 조건이 달라졌음을 알리는 값이다. */
+  ecologyRevision?: number
+  /** 생략하면 기존처럼 심은 모든 꽃을 즉시 이용 후보로 본다. */
+  plantGrowth?: PersistentPlantGrowthState
 }>
 
 export type ResidentsFrame = Readonly<{
@@ -61,13 +67,23 @@ export class ResidentsRuntime {
   private smallResidents: SmallResidentsState
   private toad: FireBelliedToadState
   private editRevision: number
+  private ecologyRevision: number
+  private plantGrowthEnabled: boolean
   private lastEventId = 0
 
-  constructor(editState: PersistentEditState, environment: LocalEnvironmentSnapshot) {
+  constructor(
+    editState: PersistentEditState,
+    environment: LocalEnvironmentSnapshot,
+    plantGrowth?: PersistentPlantGrowthState,
+    ecologyRevision = editState.revision,
+  ) {
     this.editRevision = editState.revision
+    this.ecologyRevision = ecologyRevision
+    this.plantGrowthEnabled = plantGrowth !== undefined
     this.smallOpportunities = deriveSmallResidentOpportunities(
       editState.current,
       environment,
+      plantGrowth,
     )
     this.toadOpportunities = deriveToadOpportunities(environment)
     assertSmallResidentsContract(this.smallOpportunities)
@@ -76,11 +92,19 @@ export class ResidentsRuntime {
     this.toad = createFireBelliedToadState()
   }
 
-  reset(editState: PersistentEditState, environment: LocalEnvironmentSnapshot): void {
+  reset(
+    editState: PersistentEditState,
+    environment: LocalEnvironmentSnapshot,
+    plantGrowth?: PersistentPlantGrowthState,
+    ecologyRevision = editState.revision,
+  ): void {
     this.editRevision = editState.revision
+    this.ecologyRevision = ecologyRevision
+    this.plantGrowthEnabled = plantGrowth !== undefined
     this.smallOpportunities = deriveSmallResidentOpportunities(
       editState.current,
       environment,
+      plantGrowth,
     )
     this.toadOpportunities = deriveToadOpportunities(environment)
     assertSmallResidentsContract(this.smallOpportunities)
@@ -95,11 +119,20 @@ export class ResidentsRuntime {
       return { snapshot: this.snapshot(), smallEvents: [], toadCues: [] }
     }
 
-    if (input.editState.revision !== this.editRevision) {
+    const nextEcologyRevision = input.ecologyRevision ?? input.editState.revision
+    const nextPlantGrowthEnabled = input.plantGrowth !== undefined
+    if (
+      input.editState.revision !== this.editRevision ||
+      nextEcologyRevision !== this.ecologyRevision ||
+      nextPlantGrowthEnabled !== this.plantGrowthEnabled
+    ) {
       this.editRevision = input.editState.revision
+      this.ecologyRevision = nextEcologyRevision
+      this.plantGrowthEnabled = nextPlantGrowthEnabled
       this.smallOpportunities = deriveSmallResidentOpportunities(
         input.editState.current,
         input.environment,
+        input.plantGrowth,
       )
       this.toadOpportunities = deriveToadOpportunities(input.environment)
     }
@@ -137,6 +170,7 @@ export class ResidentsRuntime {
       smallOpportunities: this.smallOpportunities,
       toadOpportunities: this.toadOpportunities,
       editRevision: this.editRevision,
+      ecologyRevision: this.ecologyRevision,
       lastEventId: this.lastEventId,
     }
   }

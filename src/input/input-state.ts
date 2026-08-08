@@ -1,4 +1,4 @@
-export type GameAction = 'interact' | 'cancel' | 'undo'
+export type GameAction = 'interact' | 'cancel' | 'undo' | 'notebook'
 
 export type InputFrame = Readonly<{
   moveForward: number
@@ -28,6 +28,7 @@ const ACTION_KEYS = new Map<string, GameAction>([
   [' ', 'interact'],
   ['space', 'interact'],
   ['escape', 'cancel'],
+  ['n', 'notebook'],
   ['z', 'undo'],
 ])
 

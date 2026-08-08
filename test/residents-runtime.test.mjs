@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { applyEdit, createEditSession } from '../src/domain/edit-model.ts'
 import { evaluateLocalEnvironment } from '../src/domain/local-environment.ts'
+import { FIRST_MAP_PLANT_GROWTH_TUNING } from '../src/domain/plant-growth.ts'
 import { ResidentsRuntime } from '../src/runtime/residents-runtime.ts'
 
 const quietPlayer = Object.freeze({ x: 6.5, z: -1.5 })
@@ -128,4 +129,59 @@ test('새로 걷기는 동물 단계와 일회 사건 번호를 피난처 초기
   assert.equal(residents.snapshot().toad.activeRoute, undefined)
   assert.equal(residents.snapshot().lastEventId, 0)
   assert.deepEqual(residents.occupiedEditEntryIds(), [])
+})
+
+test('편집 revision이 같아도 ecologyRevision이 바뀌면 성장한 꽃의 이용 후보를 다시 만든다', () => {
+  const placed = applyEdit(createEditSession(), {
+    type: 'place',
+    zoneId: 'a-garden',
+    kind: 'low-flower',
+    at: { x: -9.8, z: 3.2 },
+  })
+  assert.equal(placed.changed, true)
+  const id = placed.entryId
+  assert.ok(id)
+  const editState = placed.session.state
+  const seed = {
+    byEntryId: {
+      [id]: { plantedAtElapsed: 0, accumulatedGrowth: 0 },
+    },
+  }
+  const adult = {
+    byEntryId: {
+      [id]: {
+        plantedAtElapsed: 0,
+        accumulatedGrowth: FIRST_MAP_PLANT_GROWTH_TUNING.stageStarts.adult,
+      },
+    },
+  }
+  const environment = evaluateLocalEnvironment(editState)
+  const residents = new ResidentsRuntime(editState, environment, seed, 20)
+  assert.equal(
+    residents.snapshot().smallOpportunities.butterfly.some(({ entryId }) => entryId === id),
+    false,
+  )
+
+  // 성장 객체만 바뀐 프레임은 명시적 생태 revision 전까지 재판정하지 않는다.
+  residents.advance(input(editState, environment, {
+    deltaSeconds: 0,
+    plantGrowth: adult,
+    ecologyRevision: 20,
+  }))
+  assert.equal(
+    residents.snapshot().smallOpportunities.butterfly.some(({ entryId }) => entryId === id),
+    false,
+  )
+
+  const frame = residents.advance(input(editState, environment, {
+    deltaSeconds: 0,
+    plantGrowth: adult,
+    ecologyRevision: 21,
+  }))
+  assert.equal(frame.snapshot.editRevision, editState.revision)
+  assert.equal(frame.snapshot.ecologyRevision, 21)
+  assert.equal(
+    frame.snapshot.smallOpportunities.butterfly.some(({ entryId }) => entryId === id),
+    true,
+  )
 })

@@ -14,6 +14,7 @@ import {
   SNAIL_PROTECTED_COVER,
 } from '../src/domain/small-residents.ts'
 import { EDIT_ZONES } from '../src/content/first-map.ts'
+import { FIRST_MAP_PLANT_GROWTH_TUNING } from '../src/domain/plant-growth.ts'
 
 const FAR_PLAYER = { x: 18, z: 22 }
 const focus = Object.fromEntries(EDIT_ZONES.map((zone) => [zone.id, zone.focus]))
@@ -418,4 +419,169 @@ test('성공한 꽃 편집과 이어진 촉촉한 덮임만 각 주민의 이용
   assert.equal(opportunities.snail.some(({ entryId }) => entryId === cover.entryId), true)
   assert.equal(opportunities.butterfly[0].protected, true)
   assert.equal(opportunities.snail[0].protected, true)
+})
+
+test('성장표가 있으면 성체 꽃만 나비 이용 후보가 되고 어린 꽃자리는 살피기 대상으로 남는다', () => {
+  const placed = applyEdit(createEditSession(), {
+    type: 'place',
+    zoneId: 'a-garden',
+    kind: 'low-flower',
+    at: focus['a-garden'],
+  })
+  assert.equal(placed.changed, true)
+  const id = placed.entryId
+  assert.ok(id)
+  const environment = evaluateLocalEnvironment(placed.session.state)
+  const opportunitiesAt = (accumulatedGrowth) => deriveSmallResidentOpportunities(
+    placed.session.state.current,
+    environment,
+    {
+      byEntryId: {
+        [id]: { plantedAtElapsed: 0, accumulatedGrowth },
+      },
+    },
+  )
+
+  for (const growth of [0, FIRST_MAP_PLANT_GROWTH_TUNING.stageStarts.young]) {
+    const opportunities = opportunitiesAt(growth)
+    assert.equal(opportunities.butterfly.some(({ entryId }) => entryId === id), false)
+    assert.deepEqual(opportunities.butterflySearch?.[0], focus['a-garden'])
+  }
+
+  const adult = opportunitiesAt(FIRST_MAP_PLANT_GROWTH_TUNING.stageStarts.adult)
+  assert.equal(adult.butterfly.some(({ entryId }) => entryId === id), true)
+  assert.equal(
+    adult.butterflySearch?.some(
+      (point) => point.x === focus['a-garden'].x && point.z === focus['a-garden'].z,
+    ),
+    false,
+  )
+
+  // 성장 상태를 연결하지 않은 기존 세계는 이전 계약을 그대로 유지한다.
+  assert.equal(
+    deriveSmallResidentOpportunities(
+      placed.session.state.current,
+      environment,
+    ).butterfly.some(({ entryId }) => entryId === id),
+    true,
+  )
+})
+
+test('꽃 곁 지지대와 이어진 덮임 곁 울타리는 주민의 구조물 이용 자리가 된다', () => {
+  let session = createEditSession()
+  const support = applyEdit(session, {
+    type: 'place-structure',
+    zoneId: 'a-garden',
+    form: 'support',
+    at: focus['a-garden'],
+    rotation: Math.PI / 2,
+  })
+  assert.equal(support.changed, true)
+  session = support.session
+  const flower = applyEdit(session, {
+    type: 'place',
+    zoneId: 'a-garden',
+    kind: 'low-flower',
+    at: focus['a-garden'],
+  })
+  assert.equal(flower.changed, true)
+  session = flower.session
+  const cover = applyEdit(session, {
+    type: 'place',
+    zoneId: 'b-moist-soil',
+    kind: 'low-cover',
+    at: { x: -4.6, z: -3.8 },
+  })
+  assert.equal(cover.changed, true)
+  session = cover.session
+  const fence = applyEdit(session, {
+    type: 'place-structure',
+    zoneId: 'b-moist-soil',
+    form: 'fence',
+    at: focus['b-moist-soil'],
+    rotation: Math.PI / 2,
+  })
+  assert.equal(fence.changed, true)
+  session = fence.session
+
+  const environment = evaluateLocalEnvironment(session.state)
+  const opportunities = deriveSmallResidentOpportunities(
+    session.state.current,
+    environment,
+  )
+  const perch = opportunities.butterfly.find(({ entryId }) => entryId === support.entryId)
+  const shelter = opportunities.snail.find(({ entryId }) => entryId === fence.entryId)
+
+  assert.equal(perch?.kind, 'built-perch')
+  assert.equal(perch?.heightOffset, 1.02)
+  assert.notDeepEqual(perch?.at, focus['a-garden'])
+  assert.equal(shelter?.kind, 'built-shelter')
+  assert.notDeepEqual(shelter?.at, focus['b-moist-soil'])
+})
+
+test('구조물을 이용 중인 주민은 이동·회전·철거를 막고 피난을 마치면 놓아준다', () => {
+  let session = createEditSession()
+  const support = applyEdit(session, {
+    type: 'place-structure',
+    zoneId: 'a-garden',
+    form: 'support',
+    at: focus['a-garden'],
+    rotation: 0,
+  })
+  assert.equal(support.changed, true)
+  session = support.session
+  session = applyEdit(session, {
+    type: 'place',
+    zoneId: 'a-garden',
+    kind: 'low-flower',
+    at: focus['a-garden'],
+  }).session
+  const environment = evaluateLocalEnvironment(session.state)
+  const opportunities = deriveSmallResidentOpportunities(session.state.current, environment)
+  const target = opportunities.butterfly.find(({ entryId }) => entryId === support.entryId)
+  assert.ok(target)
+  const initial = createSmallResidentsState(opportunities)
+  const using = {
+    ...initial,
+    butterfly: {
+      ...initial.butterfly,
+      phase: 'using',
+      target,
+      position: target.at,
+      motionFrom: target.at,
+      motionProgress: 1,
+    },
+  }
+  const guard = { occupiedEntryIds: getOccupiedEditEntryIds(using) }
+
+  for (const command of [
+    {
+      type: 'move', zoneId: 'a-garden', id: support.entryId,
+      to: { x: focus['a-garden'].x + 0.7, z: focus['a-garden'].z },
+    },
+    { type: 'rotate', zoneId: 'a-garden', id: support.entryId, rotation: Math.PI / 2 },
+    { type: 'retrieve', zoneId: 'a-garden', id: support.entryId },
+  ]) {
+    const blocked = applyEdit(session, command, guard)
+    assert.equal(blocked.changed, false)
+    assert.equal(blocked.rejection, 'occupied')
+  }
+
+  const released = {
+    ...using,
+    butterfly: {
+      ...using.butterfly,
+      phase: 'refuge',
+      position: using.butterfly.refuge,
+      motionFrom: using.butterfly.refuge,
+      motionProgress: 1,
+    },
+  }
+  assert.deepEqual(getOccupiedEditEntryIds(released), [])
+  assert.equal(
+    applyEdit(session, {
+      type: 'retrieve', zoneId: 'a-garden', id: support.entryId,
+    }, { occupiedEntryIds: getOccupiedEditEntryIds(released) }).changed,
+    true,
+  )
 })

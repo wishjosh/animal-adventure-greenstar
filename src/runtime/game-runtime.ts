@@ -32,6 +32,18 @@ export type GameSnapshot = Readonly<{
   blocked: boolean
 }>
 
+export type MovementObstacle =
+  | Readonly<{ kind: 'circle'; at: Point2; radius: number }>
+  | Readonly<{
+      kind: 'oriented-box'
+      at: Point2
+      rotation: number
+      halfLength: number
+      halfWidth: number
+    }>
+
+const PLAYER_RADIUS = 0.18
+
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.max(minimum, Math.min(maximum, value))
 }
@@ -45,6 +57,7 @@ export class GameRuntime {
   private elapsed = 0
   private started = false
   private blocked = false
+  private obstacles: readonly MovementObstacle[] = []
 
   constructor(restored?: PersistentGameState) {
     if (restored) {
@@ -58,6 +71,13 @@ export class GameRuntime {
 
   setBlocked(blocked: boolean): void {
     this.blocked = blocked
+  }
+
+  setMovementObstacles(obstacles: readonly MovementObstacle[]): void {
+    this.obstacles = obstacles.map((obstacle) => ({
+      ...obstacle,
+      at: { x: obstacle.at.x, z: obstacle.at.z },
+    }))
   }
 
   reset(restored?: PersistentGameState): void {
@@ -146,18 +166,56 @@ export class GameRuntime {
       return
     }
     const candidate = { x: this.playerX + deltaX, z: this.playerZ + deltaZ }
-    if (isWalkable(candidate)) {
+    if (this.canStandAt(candidate)) {
       this.playerX = candidate.x
       this.playerZ = candidate.z
       return
     }
     const xOnly = { x: this.playerX + deltaX, z: this.playerZ }
-    if (isWalkable(xOnly)) {
+    if (this.canStandAt(xOnly)) {
       this.playerX = xOnly.x
     }
     const zOnly = { x: this.playerX, z: this.playerZ + deltaZ }
-    if (isWalkable(zOnly)) {
+    if (this.canStandAt(zOnly)) {
       this.playerZ = zOnly.z
     }
+  }
+
+  private canStandAt(point: Point2): boolean {
+    if (!isWalkable(point)) {
+      return false
+    }
+    const current = { x: this.playerX, z: this.playerZ }
+    return this.obstacles.every((obstacle) => {
+      const nextPenetration = this.obstaclePenetration(point, obstacle)
+      if (nextPenetration <= 0) {
+        return true
+      }
+      // 충돌이 생기기 전 저장에서 구조물 안에 있던 플레이어는 더 깊이 들어가지는
+      // 못하지만 바깥쪽으로 움직여 스스로 빠져나올 수 있다.
+      const currentPenetration = this.obstaclePenetration(current, obstacle)
+      return currentPenetration > 0 && nextPenetration <= currentPenetration + 1e-9
+    })
+  }
+
+  private obstaclePenetration(point: Point2, obstacle: MovementObstacle): number {
+    if (obstacle.kind === 'circle') {
+      return Math.max(
+        0,
+        PLAYER_RADIUS + obstacle.radius -
+          Math.hypot(point.x - obstacle.at.x, point.z - obstacle.at.z),
+      )
+    }
+    const deltaX = point.x - obstacle.at.x
+    const deltaZ = point.z - obstacle.at.z
+    const cosine = Math.cos(obstacle.rotation)
+    const sine = Math.sin(obstacle.rotation)
+    const localX = cosine * deltaX + sine * deltaZ
+    const localZ = -sine * deltaX + cosine * deltaZ
+    const xPenetration = obstacle.halfLength + PLAYER_RADIUS - Math.abs(localX)
+    const zPenetration = obstacle.halfWidth + PLAYER_RADIUS - Math.abs(localZ)
+    return xPenetration > 0 && zPenetration > 0
+      ? Math.min(xPenetration, zPenetration)
+      : 0
   }
 }

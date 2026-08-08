@@ -82,3 +82,91 @@ test('새로 걷기는 위치·시점·세계 시간을 첫 상태로 되돌린�
   assert.equal(reset.elapsed, 0)
   assert.equal(reset.started, false)
 })
+
+test('시렁과 울타리 같은 구조물은 걷기를 막고 방향을 돌리면 열린 쪽으로 지난다', () => {
+  const blocked = new GameRuntime()
+  blocked.setMovementObstacles([{
+    kind: 'oriented-box',
+    at: { x: -8.75, z: 0.8 },
+    rotation: 0,
+    halfLength: 0.45,
+    halfWidth: 0.05,
+  }])
+  blocked.start()
+  const before = blocked.snapshot().playerAt
+  blocked.advance(0.05, { ...idle, moveForward: 1 })
+  assert.deepEqual(blocked.snapshot().playerAt, before)
+
+  const turned = new GameRuntime()
+  turned.setMovementObstacles([{
+    kind: 'oriented-box',
+    at: { x: -8.75, z: 0.8 },
+    rotation: Math.PI / 2,
+    halfLength: 0.45,
+    halfWidth: 0.05,
+  }])
+  turned.start()
+  turned.advance(0.05, { ...idle, moveForward: 1 })
+  assert.ok(turned.snapshot().playerAt.x > before.x)
+})
+
+test('지지대 기둥은 가까이 통과하지 못하지만 치우면 다시 걸을 수 있다', () => {
+  const runtime = new GameRuntime()
+  runtime.setMovementObstacles([{
+    kind: 'circle', at: { x: -9.0, z: 0.8 }, radius: 0.14,
+  }])
+  runtime.start()
+  const before = runtime.snapshot().playerAt
+  runtime.advance(0.05, { ...idle, moveForward: 1 })
+  assert.deepEqual(runtime.snapshot().playerAt, before)
+
+  runtime.setMovementObstacles([])
+  runtime.advance(0.05, { ...idle, moveForward: 1 })
+  assert.ok(runtime.snapshot().playerAt.x > before.x)
+})
+
+test('예전 저장의 플레이어가 구조물 안에서 시작해도 바깥쪽으로 빠져나온다', () => {
+  const runtime = new GameRuntime({
+    playerAt: { x: -9.4, z: 0.8 },
+    playerHeading: 0,
+    cameraYaw: -Math.PI / 2,
+    cameraDistance: 10.5,
+    elapsed: 12,
+  })
+  runtime.setMovementObstacles([{
+    kind: 'oriented-box',
+    at: { x: -9.4, z: 0.8 },
+    rotation: 0,
+    halfLength: 0.38,
+    halfWidth: 0.26,
+  }])
+  runtime.start()
+  const before = runtime.snapshot().playerAt
+  for (let frame = 0; frame < 3; frame += 1) {
+    runtime.advance(0.05, { ...idle, moveForward: 1 })
+  }
+  assert.ok(runtime.snapshot().playerAt.x > before.x)
+})
+
+test('긴 울타리 안에서 복원되어도 짧은 걸음을 이어 바깥으로 빠져나온다', () => {
+  const runtime = new GameRuntime({
+    playerAt: { x: -9.4, z: 0.8 },
+    playerHeading: 0,
+    cameraYaw: -Math.PI / 2,
+    cameraDistance: 10.5,
+    elapsed: 12,
+  })
+  runtime.setMovementObstacles([{
+    kind: 'oriented-box',
+    at: { x: -9.4, z: 0.8 },
+    rotation: 0,
+    halfLength: 0.52,
+    halfWidth: 0.12,
+  }])
+  runtime.start()
+  const before = runtime.snapshot().playerAt
+  for (let frame = 0; frame < 10; frame += 1) {
+    runtime.advance(0.05, { ...idle, moveForward: 1 })
+  }
+  assert.ok(runtime.snapshot().playerAt.x > before.x + 0.7)
+})

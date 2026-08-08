@@ -1,8 +1,12 @@
-import { type EditSnapshot } from './edit-model.ts'
+import { type EditSnapshot, type StructureEntry } from './edit-model.ts'
 import {
   B_C_PROTECTED_COVER_PATH,
   type LocalEnvironmentSnapshot,
 } from './local-environment.ts'
+import {
+  isAdultPlantGrowth,
+  type PersistentPlantGrowthState,
+} from './plant-growth.ts'
 import { EDIT_ZONES, type EditZoneId, type Point2 } from '../content/first-map.ts'
 
 export type SmallResidentKind = 'day-butterfly' | 'land-snail'
@@ -16,6 +20,8 @@ export type ResidentTargetKind =
   | 'edit-flower'
   | 'protected-cover'
   | 'managed-cover'
+  | 'built-perch'
+  | 'built-shelter'
 
 export type ResidentTarget = Readonly<{
   id: string
@@ -24,6 +30,8 @@ export type ResidentTarget = Readonly<{
   at: Point2
   protected: boolean
   entryId?: string
+  /** 구조물 꼭대기처럼 지면보다 높은 이용 자리의 화면 높이다. */
+  heightOffset?: number
 }>
 
 export type SmallResidentOpportunities = Readonly<{
@@ -155,10 +163,24 @@ const EDIT_ZONE_ORDER: Readonly<Record<EditZoneId, number>> = {
   'a-garden': 0,
   'b-bright-soil': 1,
   'b-moist-soil': 2,
+  'd-headwater-edge': 3,
 }
 
 function copyPoint(point: Point2): Point2 {
   return { x: point.x, z: point.z }
+}
+
+function structurePoint(
+  entry: StructureEntry,
+  localX: number,
+  localZ: number,
+): Point2 {
+  const cosine = Math.cos(entry.rotation)
+  const sine = Math.sin(entry.rotation)
+  return {
+    x: entry.at.x + localX * cosine - localZ * sine,
+    z: entry.at.z + localX * sine + localZ * cosine,
+  }
 }
 
 function distance(left: Point2, right: Point2): number {
@@ -508,6 +530,7 @@ function advanceResident(
 export function deriveSmallResidentOpportunities(
   edit: EditSnapshot,
   environment: LocalEnvironmentSnapshot,
+  plantGrowth?: PersistentPlantGrowthState,
 ): SmallResidentOpportunities {
   const butterfly: ResidentTarget[] = [BUTTERFLY_PROTECTED_FLOWER]
   const butterflySearch: Point2[] = []
@@ -521,6 +544,14 @@ export function deriveSmallResidentOpportunities(
       if (entry.kind !== 'low-flower') {
         continue
       }
+      // 성장표를 쓰는 세계에서는 꽃이 핀 성체만 실제 이용 자리다. 성장 기능을
+      // 아직 연결하지 않은 기존 호출은 예전처럼 모든 낮은 꽃을 이용할 수 있다.
+      if (
+        plantGrowth &&
+        !isAdultPlantGrowthRecord(plantGrowth, entry.id)
+      ) {
+        continue
+      }
       found += 1
       butterfly.push({
         id: 'butterfly-' + entry.id,
@@ -530,6 +561,27 @@ export function deriveSmallResidentOpportunities(
         protected: false,
         entryId: entry.id,
       })
+    }
+    if (found > 0) {
+      for (const entry of Object.values(edit[zoneId])) {
+        if (
+          entry.kind !== 'structure' ||
+          (entry.form !== 'support' && entry.form !== 'rack')
+        ) {
+          continue
+        }
+        butterfly.push({
+          id: 'butterfly-perch-' + entry.id,
+          kind: 'built-perch',
+          zoneId,
+          at: entry.form === 'support'
+            ? structurePoint(entry, 0.23, 0.08)
+            : structurePoint(entry, 0.25, 0.16),
+          protected: false,
+          entryId: entry.id,
+          heightOffset: entry.form === 'support' ? 1.02 : 0.92,
+        })
+      }
     }
     // 볕은 드는데 꽃이 하나도 없는 흙이다. 나비가 들렀다 그냥 간다.
     if (found === 0) {
@@ -556,6 +608,24 @@ export function deriveSmallResidentOpportunities(
         entryId: cover.id,
       })
     }
+    for (const entry of Object.values(edit['b-moist-soil'])) {
+      if (
+        entry.kind !== 'structure' ||
+        (entry.form !== 'rack' && entry.form !== 'fence' && entry.form !== 'shade')
+      ) {
+        continue
+      }
+      snail.push({
+        id: 'snail-shelter-' + entry.id,
+        kind: 'built-shelter',
+        zoneId: 'b-moist-soil',
+        at: entry.form === 'fence'
+          ? structurePoint(entry, 0.2, 0.18)
+          : structurePoint(entry, 0, 0),
+        protected: false,
+        entryId: entry.id,
+      })
+    }
   } else {
     // 아직 촉촉하지 않거나 덮임이 이어지지 않은 흙이다.
     // 달팽이가 조금 건너오다 되돌아간다.
@@ -571,6 +641,14 @@ export function deriveSmallResidentOpportunities(
     butterflySearch,
     snailSearch,
   }
+}
+
+function isAdultPlantGrowthRecord(
+  plantGrowth: PersistentPlantGrowthState,
+  entryId: string,
+): boolean {
+  const record = plantGrowth.byEntryId[entryId]
+  return record !== undefined && isAdultPlantGrowth(record)
 }
 
 function createRuntime(

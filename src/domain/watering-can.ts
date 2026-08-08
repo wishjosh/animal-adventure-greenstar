@@ -1,4 +1,4 @@
-import { type EditZoneId, type WaterSourceId } from '../content/first-map.ts'
+import { type CareZoneId, type Point2, type WaterSourceId } from '../content/first-map.ts'
 import {
   type SurfaceMoistureRuntime,
   waterZone,
@@ -81,7 +81,8 @@ export type PourResult = Readonly<{
 export function pourOnZone(
   can: WateringCanState,
   moisture: SurfaceMoistureRuntime,
-  zoneId: EditZoneId | undefined,
+  zoneId: CareZoneId | undefined,
+  at?: Point2,
 ): PourResult {
   if (!zoneId) {
     return { can, moisture, poured: false, rejection: 'no-zone' }
@@ -91,7 +92,7 @@ export function pourOnZone(
   }
   return {
     can: { portions: can.portions - 1 },
-    moisture: waterZone(moisture, zoneId),
+    moisture: waterZone(moisture, zoneId, at),
     poured: true,
   }
 }
