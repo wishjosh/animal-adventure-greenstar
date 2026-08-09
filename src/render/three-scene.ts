@@ -3342,69 +3342,159 @@ export class ThreeScene {
   }
 
   private buildPlayer(): void {
-    const paleWood = new THREE.MeshStandardMaterial({
-      color: 0xd0aa73,
+    const crownWood = new THREE.MeshStandardMaterial({
+      color: 0xb9783f,
+      roughness: 0.88,
+    })
+    const faceWood = new THREE.MeshStandardMaterial({
+      color: 0xdfb277,
+      roughness: 0.86,
+    })
+    const bodyWood = new THREE.MeshStandardMaterial({
+      color: 0xb77a43,
       roughness: 0.9,
     })
-    const endGrain = new THREE.MeshStandardMaterial({
-      color: 0xb9824d,
-      roughness: 0.94,
+    const limbWood = new THREE.MeshStandardMaterial({
+      color: 0xc99055,
+      roughness: 0.9,
     })
-    const cord = new THREE.MeshStandardMaterial({
-      color: 0xf0ede3,
-      roughness: 0.98,
+    const faceDetail = new THREE.MeshStandardMaterial({
+      color: 0x4d301e,
+      roughness: 0.68,
+    })
+    const greenWood = new THREE.MeshStandardMaterial({
+      color: 0x718a4f,
+      roughness: 0.88,
     })
 
     const torso = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.17, 0.19, 0.5, 24),
-      paleWood,
+      new THREE.LatheGeometry([
+        new THREE.Vector2(0.12, -0.36),
+        new THREE.Vector2(0.24, -0.3),
+        new THREE.Vector2(0.29, -0.14),
+        new THREE.Vector2(0.3, 0.04),
+        new THREE.Vector2(0.27, 0.22),
+        new THREE.Vector2(0.19, 0.34),
+        new THREE.Vector2(0.1, 0.38),
+      ], 18),
+      bodyWood,
     )
-    torso.name = 'simple-rope-doll-cylinder-torso'
-    const neckCord = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.032, 0.032, 0.12, 12),
-      cord,
+    torso.name = 'greenstar-seed-torso'
+    const neck = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.095, 0.105, 0.12, 12),
+      bodyWood,
     )
-    neckCord.position.y = 0.3
-    this.playerTorso.position.y = 1.02
-    this.playerTorso.add(torso, neckCord)
+    neck.name = 'costume-neck-anchor'
+    neck.position.y = 0.4
 
-    this.playerHead.position.y = 1.58
-    const head = new THREE.Mesh(new THREE.SphereGeometry(0.25, 24, 16), paleWood)
-    head.name = 'plain-wooden-head'
-    const nose = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.018, 0.038, 0.145, 14),
-      endGrain,
+    const starShape = new THREE.Shape()
+    for (let point = 0; point < 10; point += 1) {
+      const radius = point % 2 === 0 ? 0.105 : 0.052
+      const angle = -Math.PI / 2 + point * Math.PI / 5
+      const x = Math.cos(angle) * radius
+      const y = Math.sin(angle) * radius
+      if (point === 0) {
+        starShape.moveTo(x, y)
+      } else {
+        starShape.lineTo(x, y)
+      }
+    }
+    starShape.closePath()
+    const chestStar = new THREE.Mesh(
+      new THREE.ExtrudeGeometry(starShape, {
+        depth: 0.018,
+        bevelEnabled: true,
+        bevelSegments: 1,
+        bevelSize: 0.006,
+        bevelThickness: 0.006,
+      }),
+      greenWood,
     )
-    nose.name = 'small-wooden-nose'
-    nose.rotation.x = Math.PI / 2
-    nose.position.set(0, -0.02, 0.27)
-    this.playerHead.add(head, nose)
+    chestStar.name = 'greenstar-chest-emblem'
+    chestStar.position.set(0, 0.08, 0.286)
+    this.playerTorso.position.y = 1.03
+    this.playerTorso.add(torso, neck, chestStar)
+
+    this.playerHead.position.y = 1.7
+    const head = new THREE.Mesh(
+      new THREE.LatheGeometry([
+        new THREE.Vector2(0.08, -0.34),
+        new THREE.Vector2(0.24, -0.29),
+        new THREE.Vector2(0.33, -0.13),
+        new THREE.Vector2(0.35, 0.07),
+        new THREE.Vector2(0.31, 0.23),
+        new THREE.Vector2(0.18, 0.35),
+        new THREE.Vector2(0, 0.42),
+      ], 10),
+      crownWood,
+    )
+    head.name = 'faceted-chestnut-head'
+
+    const facePanel = new THREE.Mesh(
+      new THREE.SphereGeometry(0.29, 20, 14),
+      faceWood,
+    )
+    facePanel.name = 'plain-wooden-face-panel'
+    facePanel.scale.set(0.98, 0.82, 0.15)
+    facePanel.position.set(0, -0.055, 0.31)
+
+    const leftEye = new THREE.Mesh(new THREE.SphereGeometry(0.036, 14, 10), faceDetail)
+    const rightEye = leftEye.clone()
+    leftEye.name = 'left-eye'
+    rightEye.name = 'right-eye'
+    leftEye.scale.z = 0.45
+    rightEye.scale.z = 0.45
+    leftEye.position.set(-0.112, 0.01, 0.354)
+    rightEye.position.set(0.112, 0.01, 0.354)
+
+    const smileCurve = new THREE.QuadraticBezierCurve3(
+      new THREE.Vector3(-0.052, -0.085, 0.357),
+      new THREE.Vector3(0, -0.13, 0.364),
+      new THREE.Vector3(0.052, -0.085, 0.357),
+    )
+    const smile = new THREE.Mesh(
+      new THREE.TubeGeometry(smileCurve, 10, 0.009, 8, false),
+      faceDetail,
+    )
+    smile.name = 'small-friendly-smile'
+    this.playerHead.add(head, facePanel, leftEye, rightEye, smile)
 
     const addArm = (
+    this.player.name = 'greenstar-player'
+    this.playerTorso.name = 'costume-ready-torso-root'
+    this.playerHead.name = 'costume-ready-head-root'
+
       root: THREE.Group,
       elbowRoot: THREE.Group,
       side: -1 | 1,
     ): void => {
-      root.position.set(side * 0.22, 1.21, 0)
-      root.rotation.z = -side * 0.08
-      const shoulder = new THREE.Mesh(new THREE.SphereGeometry(0.05, 18, 12), endGrain)
-      const upperCord = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.023, 0.023, 0.22, 12),
-        cord,
+      root.name = side < 0 ? 'left-costume-arm-root' : 'right-costume-arm-root'
+      root.position.set(side * 0.31, 1.25, 0)
+      root.rotation.z = side * 0.11
+      const shoulder = new THREE.Mesh(new THREE.SphereGeometry(0.075, 14, 10), limbWood)
+      shoulder.name = 'simple-rounded-shoulder'
+      shoulder.scale.set(0.82, 1, 0.86)
+      const upperArm = new THREE.Mesh(
+        new THREE.CapsuleGeometry(0.052, 0.16, 5, 10),
+        limbWood,
       )
-      upperCord.position.y = -0.14
-      elbowRoot.position.y = -0.28
-      const elbow = new THREE.Mesh(new THREE.SphereGeometry(0.055, 18, 12), paleWood)
-      const lowerCord = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.021, 0.021, 0.22, 12),
-        cord,
+      upperArm.name = 'simple-capsule-upper-arm'
+      upperArm.position.y = -0.18
+      elbowRoot.position.y = -0.35
+      const elbow = new THREE.Mesh(new THREE.SphereGeometry(0.054, 14, 10), limbWood)
+      elbow.name = 'subtle-rounded-elbow'
+      const lowerArm = new THREE.Mesh(
+        new THREE.CapsuleGeometry(0.049, 0.17, 5, 10),
+        limbWood,
       )
-      lowerCord.position.y = -0.135
-      const hand = new THREE.Mesh(new THREE.SphereGeometry(0.075, 20, 14), endGrain)
-      hand.scale.set(0.72, 1.08, 0.5)
-      hand.position.y = -0.3
-      elbowRoot.add(elbow, lowerCord, hand)
-      root.add(shoulder, upperCord, elbowRoot)
+      lowerArm.name = 'simple-capsule-lower-arm'
+      lowerArm.position.y = -0.18
+      const hand = new THREE.Mesh(new THREE.SphereGeometry(0.076, 16, 12), faceWood)
+      hand.name = 'small-mitten-hand'
+      hand.scale.set(0.64, 1.02, 0.56)
+      hand.position.y = -0.36
+      elbowRoot.add(elbow, lowerArm, hand)
+      root.add(shoulder, upperArm, elbowRoot)
     }
 
     const addLeg = (
@@ -3412,25 +3502,32 @@ export class ThreeScene {
       kneeRoot: THREE.Group,
       side: -1 | 1,
     ): void => {
-      root.position.set(side * 0.105, 0.75, 0)
-      const hip = new THREE.Mesh(new THREE.SphereGeometry(0.055, 18, 12), endGrain)
-      const upperCord = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.025, 0.025, 0.27, 12),
-        cord,
+      root.name = side < 0 ? 'left-costume-leg-root' : 'right-costume-leg-root'
+      root.position.set(side * 0.115, 0.76, 0)
+      const hip = new THREE.Mesh(new THREE.SphereGeometry(0.082, 14, 10), limbWood)
+      hip.name = 'simple-rounded-hip'
+      hip.scale.set(0.82, 0.9, 0.86)
+      const upperLeg = new THREE.Mesh(
+        new THREE.CapsuleGeometry(0.068, 0.17, 5, 10),
+        limbWood,
       )
-      upperCord.position.y = -0.165
-      kneeRoot.position.y = -0.33
-      const knee = new THREE.Mesh(new THREE.SphereGeometry(0.06, 18, 12), paleWood)
-      const lowerCord = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.023, 0.023, 0.29, 12),
-        cord,
+      upperLeg.name = 'simple-capsule-upper-leg'
+      upperLeg.position.y = -0.18
+      kneeRoot.position.y = -0.34
+      const knee = new THREE.Mesh(new THREE.SphereGeometry(0.07, 14, 10), limbWood)
+      knee.name = 'subtle-rounded-knee'
+      const lowerLeg = new THREE.Mesh(
+        new THREE.CapsuleGeometry(0.064, 0.18, 5, 10),
+        limbWood,
       )
-      lowerCord.position.y = -0.17
-      const foot = new THREE.Mesh(new THREE.SphereGeometry(0.1, 20, 14), endGrain)
-      foot.scale.set(1.05, 0.36, 1.55)
-      foot.position.set(0, -0.36, 0.055)
-      kneeRoot.add(knee, lowerCord, foot)
-      root.add(hip, upperCord, kneeRoot)
+      lowerLeg.name = 'simple-capsule-lower-leg'
+      lowerLeg.position.y = -0.17
+      const foot = new THREE.Mesh(new THREE.SphereGeometry(0.11, 16, 12), faceWood)
+      foot.name = 'simple-rounded-block-foot'
+      foot.scale.set(1.05, 0.48, 1.25)
+      foot.position.set(0, -0.34, 0.035)
+      kneeRoot.add(knee, lowerLeg, foot)
+      root.add(hip, upperLeg, kneeRoot)
     }
 
     addArm(this.playerLeftArm, this.playerLeftElbow, -1)
