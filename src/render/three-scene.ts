@@ -3367,6 +3367,10 @@ export class ThreeScene {
       roughness: 0.88,
     })
 
+    this.player.name = 'greenstar-player'
+    this.playerTorso.name = 'costume-ready-torso-root'
+    this.playerHead.name = 'costume-ready-head-root'
+
     const torso = new THREE.Mesh(
       new THREE.LatheGeometry([
         new THREE.Vector2(0.12, -0.36),
@@ -3460,10 +3464,6 @@ export class ThreeScene {
     this.playerHead.add(head, facePanel, leftEye, rightEye, smile)
 
     const addArm = (
-    this.player.name = 'greenstar-player'
-    this.playerTorso.name = 'costume-ready-torso-root'
-    this.playerHead.name = 'costume-ready-head-root'
-
       root: THREE.Group,
       elbowRoot: THREE.Group,
       side: -1 | 1,
